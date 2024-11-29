@@ -1,9 +1,91 @@
 from sys import stdout as out
 import gurobipy as grb
 from typing import List
-from hoboken import V as H_V, E as H_E
 
-assert len(H_V) == len(set(H_V))
+import gpx_two
+import hoboken
+import jerseycity
+
+
+def is_point_in_polygon(polygon, point):
+    """
+    Checks if the point (x, y) is inside the convex polygon using the Shoelace algorithm.
+
+    :param polygon: List of points (tuples) that define the convex polygon. [(x1, y1), (x2, y2), ...]
+    :param point: A tuple representing the point to test (x, y).
+    :return: True if the point is inside the polygon, False otherwise.
+    """
+    x, y = point
+    n = len(polygon)
+    inside = True
+
+    # Iterate through each edge of the polygon
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]  # Next vertex (wrap around to the first vertex)
+
+        # Cross product to determine the side of the point relative to the edge
+        cross_product = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+
+        if cross_product < 0:
+            # The point is to the right of the edge
+            inside = False
+            break
+        elif cross_product == 0:
+            # The point is exactly on the edge (optional: handle this case if necessary)
+            pass
+
+    return inside
+
+
+def is_point_in_polygon(polygon, point):
+    """
+        Check if the point is inside the convex polygon using the Shoelace theorem approach.
+
+        :param polygon: List of points (tuples) that define the convex polygon. [(x1, y1), (x2, y2), ...]
+        :param point: A tuple representing the point to test (x, y).
+        :return: True if the point is inside the polygon, False otherwise.
+        """
+    x, y = point
+    n = len(polygon)
+
+    # Initialize the sign of the cross product for the first edge comparison
+    sign = None
+
+    for i in range(n):
+        # Current edge points
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]  # Next vertex (wrap around to the first vertex)
+
+        # Calculate the cross product to determine the relative orientation of the point
+        cross_product = (x2 - x1) * (y - y1) - (y2 - y1) * (x - x1)
+
+        # Check if the cross product has a consistent sign
+        if cross_product != 0:
+            if sign is None:
+                sign = cross_product > 0
+            elif (cross_product > 0) != sign:
+                return False  # If signs differ, point is outside the polygon
+
+    return True  # Point is inside the polygon if no sign mismatch
+
+def new_part_jc(V, E):
+    """Return the 'new' part of JC"""
+    polygon = [
+        (-74.08434, 40.7305261),
+        (- 74.0976437, 40.7116614),
+        (- 74.077216, 40.7015763),
+        (- 74.0612515, 40.7229158),
+        (- 74.08434, 40.7305261),
+    ]
+
+    polygon = [(v, u) for u,v in polygon]
+
+    breakpoint()
+    interior_v = set([v for v in V if is_point_in_polygon(polygon, v)])
+
+    return list(interior_v), {e: w for e, w in E.items() if all(v in interior_v for v in e)}
+
 
 
 def get_grid(SIZE):
@@ -20,16 +102,26 @@ def get_grid(SIZE):
     return V, E
 
 
-def cleaned(H_V, H_E):
-    import copy
+CITIES = [
+    [*get_grid(16), "grid"],
+    [hoboken.V, hoboken.E, "hoboken"],
+    [*new_part_jc(jerseycity.V, jerseycity.E), "jerseycity"]
+]
+
+def get_indegrees(E):
     in_deg = dict()
-    for e in H_E:
+    for e in E:
         u, v = e
-        assert u != v
-        assert (v, u) in H_E
         if v not in in_deg:
             in_deg[v] = []
         in_deg[v].append(u)
+    return in_deg
+
+def cleaned(H_V, H_E):
+    import copy
+    H_E = {e: w for e, w in H_E.items() if e[0] != e[1]}
+
+    in_deg = get_indegrees(H_E)
 
     OUT_E = copy.deepcopy(H_E)
 
@@ -61,10 +153,53 @@ def cleaned(H_V, H_E):
     return list(in_deg), OUT_E
 
 
-H_E = {(u, v): w for (u, v), w in H_E.items() if u != v}
+def real_path(tour, ORIG_V, ORIG_E):
+    output = [tour[0]]
+    in_deg = get_indegrees(ORIG_E)
 
-CLEAN_H_V, CLEAN_H_E = cleaned(H_V, H_E)
+    for i in range(1, len(tour)):
+        last = output[-1]
+        next = tour[i]
+        # find longest path consisting only of degree two vertices from last to next in ORIG_E dict from (V, V) -> weight
+        fringe = [last]
+        back_refs = {last: (last, 0), next: (last, ORIG_E.get((next, last), 0))}
+        visited = {last}
 
+        # Perform BFS-like traversal
+        while fringe:
+            new_fringe = []
+            for u in fringe:
+                for v in in_deg[u]:
+                    if v not in visited:  # Only degree-2 vertices
+                        if v == next:
+
+                            if (l := (back_refs[u][1] + ORIG_E.get((u, v), 0))) > back_refs[v][1]:
+                                back_refs[v] = (u, l)
+                            break
+                        else:
+                            if len(in_deg[v]) == 2:
+                                visited.add(v)
+                                new_fringe.append(v)
+                                back_refs[v] = (u, back_refs[u][1] + ORIG_E.get((u, v), 0))  # Store the parent and edge weight
+
+            fringe = new_fringe
+
+        # Reconstruct the path from last to next using back_refs
+        path_segment = []
+        current = next
+        while current != last:
+            prev, _ = back_refs[current]
+            path_segment.append(current)
+            current = prev
+
+        path_segment.append(last)
+        path_segment.reverse()
+
+        # Append the path to output
+        output.extend(path_segment[1:])  # Exclude 'last' as it's already in output
+        output.append(next)
+
+    return output
 
 def draw_graph(E, V, screen=None, color="red"):
     min_x = min(V, key=lambda v: v[0])[0]
@@ -74,11 +209,12 @@ def draw_graph(E, V, screen=None, color="red"):
 
     SCREEN = 720
     to_screen = lambda x, y: (
-    (SCREEN * ((x - min_x) / (max_x - min_x) - 0.5)), (SCREEN * ((y - min_y) / (max_y - min_y) - 0.5)))
+        (SCREEN * ((x - min_x) / (max_x - min_x) - 0.5)), (SCREEN * ((y - min_y) / (max_y - min_y) - 0.5)))
 
     import turtle
 
     if not screen:
+        turtle.reset()
         # Set up the screen
         screen = turtle.Screen()
 
@@ -114,10 +250,10 @@ def draw_graph(E, V, screen=None, color="red"):
     return screen
 
 
-main_screen = None # raw_graph(CLEAN_H_E, CLEAN_H_V)
+def edges(out_list):
+    return [[out_list[i], out_list[i + 1]] for i in range(len(out_list) - 1)]
 
-
-def examine_solution(model, is_magic, did_use_edge, V, E):
+def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write):
     out_list = []
     s = nc = max(V, key=lambda v: is_magic[v].x)
     print("Len found " + str(model.objVal))
@@ -130,19 +266,25 @@ def examine_solution(model, is_magic, did_use_edge, V, E):
         out_list.append(nc)
         if nc == s:
             break
-    TOUR_E = {e: E[e] for e in did_use_edge if did_use_edge[e].x >= 0.99}
-    draw_graph(TOUR_E, V, color="blue")
-    out.write('\n')
+    out_list = real_path(out_list, OLD_V, OLD_E)
+    if draw:
+        draw_graph(edges(out_list), V, color="blue")
+    if write:
+        with open(name + "_route.py", "w") as f:
+            f.write("ROUTE = " + repr(real_path(out_list, OLD_V, OLD_E)))
+        gpx_two.coords_to_gpx_route(out_list, name + "_route.gpx")
 
 
-def find_longest_tour(V, E) -> List:
+def find_longest_tour(V, E, name="hoboken", draw = True, write = True) -> List:
+    OLD_V, OLD_E = V, E
+    V, E = cleaned(OLD_V, OLD_E)
+
     n = len(V)
     model = grb.Model()
 
-
     # Set aggressive presolve, high parallelism, lax numerical tolerances
-    model.setParam("Presolve", 1)  # Aggressive presolve
-    model.setParam("TimeLimit", 3600)
+    model.setParam("Presolve", 1)
+    model.setParam("TimeLimit", 300)
 
     # binary variables indicating if arc (i,j) is used on the route or not
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -178,9 +320,10 @@ def find_longest_tour(V, E) -> List:
 
     # checking if a feasible solution was found
     if model.status != grb.GRB.INFEASIBLE:
-        examine_solution(model, is_magic, did_use_edge, V, E)
+        examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
     else:
         print("No feasible solution found!")
 
 
-find_longest_tour(CLEAN_H_V, CLEAN_H_E)
+for V, E, name in reversed(CITIES):
+    find_longest_tour(V, E, name, draw = False)
