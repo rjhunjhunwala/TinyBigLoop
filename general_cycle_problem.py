@@ -1,6 +1,5 @@
 from sys import stdout as out
-from mip import Model, xsum, maximize, BINARY, OptimizationStatus
-
+import gurobipy as grb
 from typing import List
 from hoboken import V as H_V, E as H_E
 
@@ -20,8 +19,8 @@ def get_grid(SIZE):
                 E[((new_i, new_j), (i, j))] = 1
     return V, E
 
+
 def cleaned(H_V, H_E):
-    # return  H_V, H_E
     import copy
     in_deg = dict()
     for e in H_E:
@@ -34,7 +33,7 @@ def cleaned(H_V, H_E):
 
     OUT_E = copy.deepcopy(H_E)
 
-    assert all(val for val in  in_deg.values())
+    assert all(val for val in in_deg.values())
 
     for v in list(in_deg):
         if len(in_deg[v]) == 2:
@@ -42,13 +41,13 @@ def cleaned(H_V, H_E):
             assert a != b
             assert a != v
             assert b != v
-            assert (a,v ) in OUT_E
+            assert (a, v) in OUT_E
             assert (v, a) in OUT_E
             assert (b, v) in OUT_E
             assert (v, b) in OUT_E
-            a_dist = OUT_E.pop((v,a))
+            a_dist = OUT_E.pop((v, a))
             b_dist = OUT_E.pop((v, b))
-            OUT_E.pop((a,v))
+            OUT_E.pop((a, v))
             OUT_E.pop((b, v))
             in_deg[b].remove(v)
             in_deg[a].remove(v)
@@ -62,18 +61,20 @@ def cleaned(H_V, H_E):
     return list(in_deg), OUT_E
 
 
-H_E = {(u,v): w for (u,v), w in H_E.items() if u != v}
+H_E = {(u, v): w for (u, v), w in H_E.items() if u != v}
 
 CLEAN_H_V, CLEAN_H_E = cleaned(H_V, H_E)
 
-def draw_graph(E, V, screen = None, color="red"):
-    min_x = min(V, key = lambda v: v[0])[0]
-    min_y = min(V, key = lambda v: v[1])[1]
-    max_x = max(V, key = lambda v: v[0])[0]
-    max_y = max(V, key = lambda v: v[1])[1]
+
+def draw_graph(E, V, screen=None, color="red"):
+    min_x = min(V, key=lambda v: v[0])[0]
+    min_y = min(V, key=lambda v: v[1])[1]
+    max_x = max(V, key=lambda v: v[0])[0]
+    max_y = max(V, key=lambda v: v[1])[1]
 
     SCREEN = 720
-    to_screen = lambda x, y: ((SCREEN * (( x - min_x) / (max_x - min_x) - 0.5)), (SCREEN * (( y - min_y) / (max_y - min_y) - 0.5) ))
+    to_screen = lambda x, y: (
+    (SCREEN * ((x - min_x) / (max_x - min_x) - 0.5)), (SCREEN * ((y - min_y) / (max_y - min_y) - 0.5)))
 
     import turtle
 
@@ -107,18 +108,19 @@ def draw_graph(E, V, screen = None, color="red"):
         pen.goto(loc2[0], loc2[1])
         pen.penup()
 
-
     screen.update()
     # Keep the window open until clicked
     breakpoint()
     return screen
-                
-main_screen = draw_graph(CLEAN_H_E, CLEAN_H_V)
+
+
+main_screen = None # raw_graph(CLEAN_H_E, CLEAN_H_V)
+
 
 def examine_solution(model, is_magic, did_use_edge, V, E):
     out_list = []
     s = nc = max(V, key=lambda v: is_magic[v].x)
-    print("Len found " + str(model.objective_value))
+    print("Len found " + str(model.objVal))
     print(nc)
     out_list.append(nc)
     while True:
@@ -126,54 +128,59 @@ def examine_solution(model, is_magic, did_use_edge, V, E):
         nc = [i for i in V if (nc, i) in E and did_use_edge[(nc, i)].x >= 0.99][0]
         print(nc)
         out_list.append(nc)
-        # out.write(' -> %s' % nc)
         if nc == s:
             break
-    # draw_tour(out_list)
     TOUR_E = {e: E[e] for e in did_use_edge if did_use_edge[e].x >= 0.99}
-    draw_graph(TOUR_E, V, color = "blue")
+    draw_graph(TOUR_E, V, color="blue")
     out.write('\n')
 
+
 def find_longest_tour(V, E) -> List:
-
     n = len(V)
-    model = Model()
+    model = grb.Model()
 
-    model.max_seconds = 900
+
+    # Set aggressive presolve, high parallelism, lax numerical tolerances
+    model.setParam("Presolve", 1)  # Aggressive presolve
+    model.setParam("TimeLimit", 3600)
 
     # binary variables indicating if arc (i,j) is used on the route or not
-    did_use_edge = {e: model.add_var(var_type=BINARY) for e in E}
+    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
 
     # continuous variable to prevent subtours: each city will have a
     # different sequential id in the planned route except the first one
-    index = {v: model.add_var() for v in V}
+    index = {v: model.addVar() for v in V}
 
-    # objective function: minimize the distance
-    model.objective = maximize(xsum( E.get(e) * used for e, used in did_use_edge.items()))
+    model.setObjective(grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), grb.GRB.MAXIMIZE)
 
     # constraint : enter each city only once
     for i in V:
-        model += xsum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= 1
-        model += xsum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= xsum(did_use_edge[(j, i)] for j in V if (j, i) in E)
+        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= 1)
+        model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
+            did_use_edge[(j, i)] for j in V if (j, i) in E))
 
     # binary variables indicating if arc (i,j) is used on the route or not
-    is_magic = {v: model.add_var(var_type=BINARY) for v in V}
+    is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
     # Only one magic source, index = 0
-    model += xsum(var for var in is_magic.values()) <= 1
+    model.addConstr(grb.quicksum(is_magic.values()) <= 1)
 
     # subtour elimination
     for e in E:
         i, j = e
-        model += index[i] - (n+1)*did_use_edge[e] + 2 * n * is_magic[i] >= index[j]-n
+        model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_magic[i] >= index[j] - n)
 
+    # optimizing (only checking feasibility)
+    try:
+        model.optimize()
+    except BaseException:
+        pass
 
-    # optimizing
-    model.optimize()
-
-    # checking if a solution was found
-    if model.num_solutions:
+    # checking if a feasible solution was found
+    if model.status != grb.GRB.INFEASIBLE:
         examine_solution(model, is_magic, did_use_edge, V, E)
+    else:
+        print("No feasible solution found!")
 
 
 find_longest_tour(CLEAN_H_V, CLEAN_H_E)
