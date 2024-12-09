@@ -266,6 +266,7 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
         if nc == s:
             break
     out_list = real_path(out_list, OLD_V, OLD_E)
+    breakpoint()
     if draw:
         draw_graph(edges(out_list), V, color="blue")
     if write:
@@ -339,7 +340,9 @@ def find_longest_tour(
     is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
     # Length of the tour
-    length = grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge)
+    length = model.addVar(lb = 0, ub = grb.GRB.INFINITY)
+    model.update()
+    model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
 
     # Center and radius of the n-gon
     center_x = model.addVar(lb=-grb.GRB.INFINITY)
@@ -416,14 +419,14 @@ def find_longest_tour(
         pass
 
     if model.status != grb.GRB.INFEASIBLE:
+        breakpoint()
         examine_solution(model, is_used, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
     else:
         print("No feasible solution found!")
 
-def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, max_len = None, max_radius = None) -> List:
+def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True,  SIDES=72, min_len= None, max_radius=None) -> List:
     OLD_V, OLD_E = V, E
     V, E = cleaned(OLD_V, OLD_E)
-
     local_coords = project_to_local_plane(V)
     LOCAL_V = dict(zip(V, local_coords))
 
@@ -441,21 +444,23 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, max_l
     # different sequential id in the planned route except the first one
     index = {v: model.addVar() for v in V}
 
-    length = grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge)
+    # Length of the tour
+    length = model.addVar(lb = 0, ub = grb.GRB.INFINITY)
+    model.update()
+    model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
 
-    # binary variables indicating if vertex v is included
-    is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+    model.setObjective(length, grb.GRB.MAXIMIZE)
 
     # constraint : enter each city only once
     for i in V:
-        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= is_used[i])
+        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= 1)
         model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
             did_use_edge[(j, i)] for j in V if (j, i) in E))
 
-    # binary variables indicating if vertex v is the "start" vertex used twice.
+    # binary variables indicating if arc (i,j) is used on the route or not
     is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-    # Only one magic source
+    # Only one magic source, index = 0
     model.addConstr(grb.quicksum(is_magic.values()) <= 1)
 
     # subtour elimination
@@ -471,10 +476,11 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, max_l
 
     # checking if a feasible solution was found
     if model.status != grb.GRB.INFEASIBLE:
+        breakpoint()
         examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
     else:
         print("No feasible solution found!")
 
 
 for V, E, name in reversed(CITIES):
-    find_longest_tour(V, E, name = name, draw = False, min_length=10000)
+    find_longest_tour(V, E, name = name, draw = False, min_length=20000)

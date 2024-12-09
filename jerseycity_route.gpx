@@ -1,12 +1,10 @@
 <?xml version="1.0" ?>
 <gpx xmlns="http://www.topografix.com/GPX/1/1" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" version="1.1" creator="coords_to_gpx_route_function" xsi:schemaLocation="http://www.topografix.com/GPX/1/1 http://www.topografix.com/GPX/1/1/gpx.xsd">
   <rte>
-    <rtept lat="40.715024" lon="-74.082534"/>
-    <rtept lat="40.715509" lon="-74.083419"/>
-    <rtept lat="40.716617" lon="-74.085514"/>
-    <rtept lat="40.716617" lon="-74.085514"/>
-    <rtept lat="40.715509" lon="-74.083419"/>
-    <rtept lat="40.715024" lon="-74.082534"/>
-    <rtept lat="40.715024" lon="-74.082534"/>
+    <rtept lat="40.720678" lon="-74.086677"/>
+    <rtept lat="40.719013" lon="-74.082967"/>
+    <rtept lat="40.719013" lon="-74.082967"/>
+    <rtept lat="40.720678" lon="-74.086677"/>
+    <rtept lat="40.720678" lon="-74.086677"/>
   </rte>
 </gpx>
