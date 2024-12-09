@@ -1,6 +1,7 @@
 from sys import stdout as out
 import gurobipy as grb
 from typing import List
+import math
 
 import gpx_two
 import hoboken
@@ -81,7 +82,6 @@ def new_part_jc(V, E):
 
     polygon = [(v, u) for u,v in polygon]
 
-    breakpoint()
     interior_v = set([v for v in V if is_point_in_polygon(polygon, v)])
 
     return list(interior_v), {e: w for e, w in E.items() if all(v in interior_v for v in e)}
@@ -103,7 +103,6 @@ def get_grid(SIZE):
 
 
 CITIES = [
-    [*get_grid(16), "grid"],
     [hoboken.V, hoboken.E, "hoboken"],
     [*new_part_jc(jerseycity.V, jerseycity.E), "jerseycity"]
 ]
@@ -275,9 +274,158 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
         gpx_two.coords_to_gpx_route(out_list, name + "_route.gpx")
 
 
-def find_longest_tour(V, E, name="hoboken", draw = True, write = True) -> List:
+import numpy as np
+from pyproj import CRS, Transformer
+
+def project_to_local_plane(lat_lon_list):
+    """
+    Projects a list of latitude, longitude pairs to a local coordinate system in meters.
+
+    :param lat_lon_list: List of (latitude, longitude) tuples.
+    :return: List of (x, y) coordinates in meters relative to the median lat/lon.
+    """
+    import numpy as np
+
+    # Step 1: Calculate the median latitude and longitude
+    latitudes = [lat for lat, lon in lat_lon_list]
+    longitudes = [lon for lat, lon in lat_lon_list]
+
+    median_lat = np.median(latitudes)
+    median_lon = np.median(longitudes)
+
+    # Step 2: Determine the appropriate UTM zone dynamically
+    utm_zone = int((median_lon + 180) // 6) + 1
+    is_northern = median_lat >= 0
+    utm_crs = CRS.from_dict({
+        "proj": "utm",
+        "zone": utm_zone,
+        "south": not is_northern,
+        "ellps": "WGS84"
+    })
+
+    # Step 3: Transform from WGS84 to the UTM projection
+    transformer = Transformer.from_crs(CRS("EPSG:4326"), utm_crs, always_xy=True)
+
+    # Step 4: Project points to the local UTM coordinate system
+    local_coords = []
+    for lat, lon in lat_lon_list:
+        x, y = transformer.transform(lon, lat)  # Note the order: lon, lat for pyproj
+        local_coords.append((x, y))
+
+    return local_coords
+
+def find_longest_tour(
+    V, E, SIDES=72, min_length=None, max_diameter=None, name="hoboken", draw=True, write=True
+):
     OLD_V, OLD_E = V, E
     V, E = cleaned(OLD_V, OLD_E)
+
+    local_coords = project_to_local_plane(V)
+    LOCAL_V = dict(zip(V, local_coords))
+
+    n = len(V)
+    model = grb.Model()
+
+    model.setParam("Presolve", 1)
+    model.setParam("TimeLimit", 300)
+
+    # Binary variables for edges used in the route
+    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
+
+    # Variables for subtour elimination
+    index = {v: model.addVar() for v in V}
+
+    # Variables for vertices used
+    is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+
+    # Length of the tour
+    length = grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge)
+
+    # Center and radius of the n-gon
+    center_x = model.addVar(lb=-grb.GRB.INFINITY)
+    center_y = model.addVar(lb=-grb.GRB.INFINITY)
+    radius = model.addVar(lb=1, ub = 5000)
+
+    # Compute the diameter of the n-gon
+    diameter = model.addVar(lb=1, ub = 5000)
+    model.addConstr(diameter == 2 * radius)
+
+    if not min_length and not max_diameter:
+
+        # Objective: dynamically determined
+        log_length = model.addVar(lb=1, ub = 24)
+        log_diameter = model.addVar(lb=1, ub = 24)
+        model.update()
+        model.addGenConstrLog(length, log_length)
+        model.update()
+        model.addGenConstrLog(diameter, log_diameter)
+        model.update()
+
+    # Set the objective dynamically
+    if min_length is None and max_diameter is None:
+        # Maximize length / diameter
+        model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
+    elif min_length is not None and max_diameter is not None:
+        # Feasibility only
+        model.addConstr(length >= min_length)
+        model.addConstr(diameter <= max_diameter)
+    elif min_length is not None:
+        # Minimize diameter while satisfying min_length
+        model.addConstr(length >= min_length)
+        model.setObjective(diameter, grb.GRB.MINIMIZE)
+    elif max_diameter is not None:
+        # Maximize length while satisfying max_diameter
+        model.addConstr(diameter <= max_diameter)
+        model.setObjective(length, grb.GRB.MAXIMIZE)
+
+    # Constraints for entering and exiting each city
+    for i in V:
+        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= is_used[i])
+        model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
+            did_use_edge[(j, i)] for j in V if (j, i) in E))
+
+    # Subtour elimination constraints
+    for e in E:
+        i, j = e
+        model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_used[i] >= index[j] - n)
+
+    # Enforce n-gon half-space constraints using Big-M
+    M = 1e6  # A sufficiently large constant
+    for v, (local_x, local_y) in LOCAL_V.items():
+        if v in is_used:
+            for k in range(SIDES):
+                # Compute line parameters for the k-th side of the n-gon
+                angle = 2 * math.pi * k / SIDES
+                next_angle = 2 * math.pi * (k + 1) / SIDES
+
+                # Line defined as (x, y) satisfying ax + by + c <= 0
+                # Derived from the center and a point on the edge
+                a = math.sin(next_angle) - math.sin(angle)
+                b = -(math.cos(next_angle) - math.cos(angle))
+                c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+
+                # Big-M constraint to "turn off" the constraint when is_used[v] == 0
+                model.addConstr(
+                    a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+                )
+
+    # Optimize and examine the solution
+    try:
+        model.optimize()
+    except Exception:
+        pass
+
+    if model.status != grb.GRB.INFEASIBLE:
+        examine_solution(model, is_used, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
+    else:
+        print("No feasible solution found!")
+
+def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, max_len = None, max_radius = None) -> List:
+    OLD_V, OLD_E = V, E
+    V, E = cleaned(OLD_V, OLD_E)
+
+    local_coords = project_to_local_plane(V)
+    LOCAL_V = dict(zip(V, local_coords))
 
     n = len(V)
     model = grb.Model()
@@ -293,18 +441,21 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True) -> List:
     # different sequential id in the planned route except the first one
     index = {v: model.addVar() for v in V}
 
-    model.setObjective(grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), grb.GRB.MAXIMIZE)
+    length = grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge)
+
+    # binary variables indicating if vertex v is included
+    is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
     # constraint : enter each city only once
     for i in V:
-        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= 1)
+        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= is_used[i])
         model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
             did_use_edge[(j, i)] for j in V if (j, i) in E))
 
-    # binary variables indicating if arc (i,j) is used on the route or not
+    # binary variables indicating if vertex v is the "start" vertex used twice.
     is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-    # Only one magic source, index = 0
+    # Only one magic source
     model.addConstr(grb.quicksum(is_magic.values()) <= 1)
 
     # subtour elimination
@@ -326,4 +477,4 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True) -> List:
 
 
 for V, E, name in reversed(CITIES):
-    find_longest_tour(V, E, name, draw = False)
+    find_longest_tour(V, E, name = name, draw = False, min_length=10000)
