@@ -1,0 +1,8 @@
+[out:xml]; area[wikidata = "Q138578"]; (way(area)[highway~"trunk|primary|secondary|tertiary|unclassified|residential"][footway!~"sidewalk|crossing"][service!~"parking_aisle|driveway"]; ); (._;>;); out;
+
+
+
+[out:xml]; area[wikidata = "Q26339"]; (way(area)[highway~"trunk|primary|secondary|tertiary|unclassified|residential"]; ); (._;>;); out;
+
+
+
