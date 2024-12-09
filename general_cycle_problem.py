@@ -245,7 +245,6 @@ def draw_graph(E, V, screen=None, color="red"):
 
     screen.update()
     # Keep the window open until clicked
-    breakpoint()
     return screen
 
 
@@ -266,7 +265,6 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
         if nc == s:
             break
     out_list = real_path(out_list, OLD_V, OLD_E)
-    breakpoint()
     if draw:
         draw_graph(edges(out_list), V, color="blue")
     if write:
@@ -315,127 +313,20 @@ def project_to_local_plane(lat_lon_list):
 
     return local_coords
 
-def find_longest_tour(
-    V, E, SIDES=72, min_length=None, max_diameter=None, name="hoboken", draw=True, write=True
-):
+def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 10) -> List:
     OLD_V, OLD_E = V, E
     V, E = cleaned(OLD_V, OLD_E)
-
     local_coords = project_to_local_plane(V)
     LOCAL_V = dict(zip(V, local_coords))
 
     n = len(V)
     model = grb.Model()
-
-    model.setParam("Presolve", 1)
-    model.setParam("TimeLimit", 300)
-
-    # Binary variables for edges used in the route
-    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
-
-    # Variables for subtour elimination
-    index = {v: model.addVar() for v in V}
 
     # Variables for vertices used
     is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-    # Length of the tour
-    length = model.addVar(lb = 0, ub = grb.GRB.INFINITY)
-    model.update()
-    model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
-
-    # Center and radius of the n-gon
-    center_x = model.addVar(lb=-grb.GRB.INFINITY)
-    center_y = model.addVar(lb=-grb.GRB.INFINITY)
-    radius = model.addVar(lb=1, ub = 5000)
-
-    # Compute the diameter of the n-gon
-    diameter = model.addVar(lb=1, ub = 5000)
-    model.addConstr(diameter == 2 * radius)
-
-    if not min_length and not max_diameter:
-
-        # Objective: dynamically determined
-        log_length = model.addVar(lb=1, ub = 24)
-        log_diameter = model.addVar(lb=1, ub = 24)
-        model.update()
-        model.addGenConstrLog(length, log_length)
-        model.update()
-        model.addGenConstrLog(diameter, log_diameter)
-        model.update()
-
-    # Set the objective dynamically
-    if min_length is None and max_diameter is None:
-        # Maximize length / diameter
-        model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
-    elif min_length is not None and max_diameter is not None:
-        # Feasibility only
-        model.addConstr(length >= min_length)
-        model.addConstr(diameter <= max_diameter)
-    elif min_length is not None:
-        # Minimize diameter while satisfying min_length
-        model.addConstr(length >= min_length)
-        model.setObjective(diameter, grb.GRB.MINIMIZE)
-    elif max_diameter is not None:
-        # Maximize length while satisfying max_diameter
-        model.addConstr(diameter <= max_diameter)
-        model.setObjective(length, grb.GRB.MAXIMIZE)
-
-    # Constraints for entering and exiting each city
-    for i in V:
-        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= is_used[i])
-        model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
-            did_use_edge[(j, i)] for j in V if (j, i) in E))
-
-    # Subtour elimination constraints
-    for e in E:
-        i, j = e
-        model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_used[i] >= index[j] - n)
-
-    # Enforce n-gon half-space constraints using Big-M
-    M = 1e6  # A sufficiently large constant
-    for v, (local_x, local_y) in LOCAL_V.items():
-        if v in is_used:
-            for k in range(SIDES):
-                # Compute line parameters for the k-th side of the n-gon
-                angle = 2 * math.pi * k / SIDES
-                next_angle = 2 * math.pi * (k + 1) / SIDES
-
-                # Line defined as (x, y) satisfying ax + by + c <= 0
-                # Derived from the center and a point on the edge
-                a = math.sin(next_angle) - math.sin(angle)
-                b = -(math.cos(next_angle) - math.cos(angle))
-                c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
-
-                # Big-M constraint to "turn off" the constraint when is_used[v] == 0
-                model.addConstr(
-                    a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
-                )
-
-    # Optimize and examine the solution
-    try:
-        model.optimize()
-    except Exception:
-        pass
-
-    if model.status != grb.GRB.INFEASIBLE:
-        breakpoint()
-        examine_solution(model, is_used, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
-    else:
-        print("No feasible solution found!")
-
-def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True,  SIDES=72, min_len= None, max_radius=None) -> List:
-    OLD_V, OLD_E = V, E
-    V, E = cleaned(OLD_V, OLD_E)
-    local_coords = project_to_local_plane(V)
-    LOCAL_V = dict(zip(V, local_coords))
-
-    n = len(V)
-    model = grb.Model()
-
-    # Set aggressive presolve, high parallelism, lax numerical tolerances
-    model.setParam("Presolve", 1)
-    model.setParam("TimeLimit", 300)
+    model.setParam("TimeLimit", 3600)
+    model.setParam("FuncNonLinear", 0)
 
     # binary variables indicating if arc (i,j) is used on the route or not
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -445,17 +336,57 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True,  SIDE
     index = {v: model.addVar() for v in V}
 
     # Length of the tour
-    length = model.addVar(lb = 0, ub = grb.GRB.INFINITY)
+    length = model.addVar(lb = 1000, ub = 1600000)
     model.update()
     model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
 
-    model.setObjective(length, grb.GRB.MAXIMIZE)
+    log_length = model.addVar(lb=7, ub=12)
+    model.addGenConstrLog(length, log_length)
+
+    radius = model.addVar(lb=100, ub = 2000)
+
+    # Compute the diameter of the n-gon
+    diameter = model.addVar(lb=200, ub = 4000)
+    model.addConstr(diameter == 2 * radius)
+
+    # Center and radius of the n-gon
+    center_x = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
+    center_y = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
+
+
+    # Enforce n-gon half-space constraints using Big-M
+    M = 1e6  # A sufficiently large constant
+    for v, (local_x, local_y) in LOCAL_V.items():
+        for k in range(SIDES):
+            # Compute line parameters for the k-th side of the n-gon
+            angle = 2 * math.pi * k / SIDES
+            next_angle = 2 * math.pi * (k + 1) / SIDES
+
+            # Line defined as (x, y) satisfying ax + by + c <= 0
+            # Derived from the center and a point on the edge
+            a = math.sin(next_angle) - math.sin(angle)
+            b = -(math.cos(next_angle) - math.cos(angle))
+            c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+
+            # Big-M constraint to "turn off" the constraint when is_used[v] == 0
+            model.addConstr(
+                a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+            )
+
+
+
+
+    log_diameter = model.addVar(lb=5, ub = 12)
+    model.addGenConstrLog(diameter, log_diameter)
+
+    model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
 
     # constraint : enter each city only once
     for i in V:
-        model.addConstr(grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E) <= 1)
-        model.addConstr(grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E) <= grb.quicksum(
-            did_use_edge[(j, i)] for j in V if (j, i) in E))
+        in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E)
+        out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E)
+        model.addConstr(out_degree == is_used[i])
+        model.addConstr(in_degree == is_used[i])
 
     # binary variables indicating if arc (i,j) is used on the route or not
     is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
@@ -476,11 +407,10 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True,  SIDE
 
     # checking if a feasible solution was found
     if model.status != grb.GRB.INFEASIBLE:
-        breakpoint()
         examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write)
     else:
         print("No feasible solution found!")
 
 
-for V, E, name in reversed(CITIES):
-    find_longest_tour(V, E, name = name, draw = False, min_length=20000)
+for V, E, name in CITIES:
+    find_longest_tour_old(V, E, name = name, draw = False)
