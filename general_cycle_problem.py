@@ -310,10 +310,15 @@ def project_to_local_plane(lat_lon_list):
     for lat, lon in lat_lon_list:
         x, y = transformer.transform(lon, lat)  # Note the order: lon, lat for pyproj
         local_coords.append((x, y))
-
+    xs, ys = zip(*local_coords)
+    xs = np.array(xs)
+    ys = np.array(ys)
+    xs = xs - np.average(xs)
+    ys = ys - np.average(ys)
+    local_coords = zip(xs, ys)
     return local_coords
 
-def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 0) -> List:
+def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 0, MISOCP = True) -> List:
     OLD_V, OLD_E = V, E
     V, E = cleaned(OLD_V, OLD_E)
     local_coords = project_to_local_plane(V)
@@ -327,11 +332,12 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
     model.setParam("TimeLimit", 18000)
     model.setParam("FuncNonLinear", 0)
-    model.setParam("Presolve", 0)
-    if SIDES == 0:
-        model.setParam("PreMIQCPForm", 2)
-        model.setParam("PreQLinearize", 2)
+    model.setParam("Presolve", 2)
+    if SIDES == 0 and MISOCP:
         model.setParam("NonConvex", 1)
+        model.setParam("MIPFocus", 3)
+        model.setParam("Symmetry", 2)
+        model.setParam("Method", 3)
 
     # binary variables indicating if arc (i,j) is used on the route or not
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -358,50 +364,67 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     center_x = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
     center_y = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
 
+    # constraint : enter each city only once
+    for i in V:
+        in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E)
+        out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E)
+        model.addConstr(out_degree == is_used[i])
+        model.addConstr(in_degree == is_used[i])
+
 
     # Enforce n-gon half-space constraints using Big-M
     M = 5e4  # A sufficiently large constant Compute this reasonably.
-    for v, (local_x, local_y) in LOCAL_V.items():
-        if SIDES != 0:
 
-            for k in range(SIDES):
-                # Compute line parameters for the k-th side of the n-gon
-                angle = 2 * math.pi * k / SIDES
-                next_angle = 2 * math.pi * (k + 1) / SIDES
+    def dist(x1, y1, x2, y2):
+        return math.sqrt((x1 - x2) ** 2 + (y1 - y2) ** 2)
 
-                # Line defined as (x, y) satisfying ax + by + c <= 0
-                # Derived from the center and a point on the edge
-                a = math.sin(next_angle) - math.sin(angle)
-                b = -(math.cos(next_angle) - math.cos(angle))
-                c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+    if SIDES == 0 and not MISOCP:
+        distances = {(u, v): dist(*local_u, *local_v) for u, local_u in LOCAL_V.items() for v, local_v in
+                     LOCAL_V.items()}
+        is_center = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+        model.addConstr(grb.quicksum(used for used in is_center.values()) == 1)
+        for v in V:
 
-                # Big-M constraint to "turn off" the constraint when is_used[v] == 0
-                model.addConstr(
-                    a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
-                )
-        else:
-            # Auxiliary variable for the distance
-            distance = model.addVar(lb=0, ub=grb.GRB.INFINITY, name=f"distance_{v}")
+            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V))
 
-            distance_x = model.addVar()
-            model.addConstr(distance_x == local_x - center_x)
+    else:
 
-            distance_y = model.addVar()
-            model.addConstr(distance_y == local_y - center_y)
+        for v, (local_x, local_y) in LOCAL_V.items():
+            if SIDES != 0:
 
+                for k in range(SIDES):
+                    # Compute line parameters for the k-th side of the n-gon
+                    angle = 2 * math.pi * k / SIDES
+                    next_angle = 2 * math.pi * (k + 1) / SIDES
 
+                    # Line defined as (x, y) satisfying ax + by + c <= 0
+                    # Derived from the center and a point on the edge
+                    a = math.sin(next_angle) - math.sin(angle)
+                    b = -(math.cos(next_angle) - math.cos(angle))
+                    c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
 
-            # SOC constraint for the Euclidean distance
-            model.addConstr(
-                distance * distance >= (distance_x) ** 2 + (distance_y ) ** 2,
-                name=f"soc_constraint_{v}"
-            )
+                    # Big-M constraint to "turn off" the constraint when is_used[v] == 0
+                    model.addConstr(
+                        a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+                    )
+            else:
 
-            # Big-M constraint for activation/deactivation
-            model.addConstr(
-                distance <= radius + M * (1 - is_used[v]),
-                name=f"big_m_constraint_{v}"
-            )
+                if MISOCP:
+                    # Auxiliary variable for the distance
+                    distance = model.addVar(lb=100, ub=5000, name=f"distance_{v}")
+                    y_diff= model.addVar()
+                    model.addConstr(y_diff == local_x - center_y )
+
+                    model.addConstr( (local_x - center_x)**2 + (y_diff) ** 2 <= distance * distance, "rotated_cone")
+
+                    assert (local_y ** 2  + local_x ** 2 <= 5000000)
+
+                    # Big-M constraint for activation/deactivation
+                    model.addConstr(
+                      distance <= radius + (1 - is_used[v]) * M,
+                       name=f"big_m_constraint_{v}"
+                    )
+
 
 
 
@@ -409,13 +432,6 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     model.addGenConstrLog(diameter, log_diameter)
 
     model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
-
-    # constraint : enter each city only once
-    for i in V:
-        in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E)
-        out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E)
-        model.addConstr(out_degree == is_used[i])
-        model.addConstr(in_degree == is_used[i])
 
     # binary variables indicating if arc (i,j) is used on the route or not
     is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
@@ -442,4 +458,4 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
 
 for V, E, name in CITIES:
-    find_longest_tour_old(V, E, name = name, draw = False, SIDES = 12)
+    find_longest_tour_old(V, E, name = name, draw = False, SIDES = 0, MISOCP = True)
