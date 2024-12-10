@@ -313,7 +313,7 @@ def project_to_local_plane(lat_lon_list):
 
     return local_coords
 
-def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 10) -> List:
+def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 0) -> List:
     OLD_V, OLD_E = V, E
     V, E = cleaned(OLD_V, OLD_E)
     local_coords = project_to_local_plane(V)
@@ -325,8 +325,13 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     # Variables for vertices used
     is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-    model.setParam("TimeLimit", 3600)
+    model.setParam("TimeLimit", 18000)
     model.setParam("FuncNonLinear", 0)
+    model.setParam("Presolve", 0)
+    if SIDES == 0:
+        model.setParam("PreMIQCPForm", 2)
+        model.setParam("PreQLinearize", 2)
+        model.setParam("NonConvex", 1)
 
     # binary variables indicating if arc (i,j) is used on the route or not
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -343,7 +348,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     log_length = model.addVar(lb=7, ub=12)
     model.addGenConstrLog(length, log_length)
 
-    radius = model.addVar(lb=100, ub = 2000)
+    radius = model.addVar(lb=100, ub = 5000)
 
     # Compute the diameter of the n-gon
     diameter = model.addVar(lb=200, ub = 4000)
@@ -355,24 +360,48 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
 
     # Enforce n-gon half-space constraints using Big-M
-    M = 1e6  # A sufficiently large constant
+    M = 5e4  # A sufficiently large constant Compute this reasonably.
     for v, (local_x, local_y) in LOCAL_V.items():
-        for k in range(SIDES):
-            # Compute line parameters for the k-th side of the n-gon
-            angle = 2 * math.pi * k / SIDES
-            next_angle = 2 * math.pi * (k + 1) / SIDES
+        if SIDES != 0:
 
-            # Line defined as (x, y) satisfying ax + by + c <= 0
-            # Derived from the center and a point on the edge
-            a = math.sin(next_angle) - math.sin(angle)
-            b = -(math.cos(next_angle) - math.cos(angle))
-            c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+            for k in range(SIDES):
+                # Compute line parameters for the k-th side of the n-gon
+                angle = 2 * math.pi * k / SIDES
+                next_angle = 2 * math.pi * (k + 1) / SIDES
 
-            # Big-M constraint to "turn off" the constraint when is_used[v] == 0
+                # Line defined as (x, y) satisfying ax + by + c <= 0
+                # Derived from the center and a point on the edge
+                a = math.sin(next_angle) - math.sin(angle)
+                b = -(math.cos(next_angle) - math.cos(angle))
+                c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+
+                # Big-M constraint to "turn off" the constraint when is_used[v] == 0
+                model.addConstr(
+                    a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+                )
+        else:
+            # Auxiliary variable for the distance
+            distance = model.addVar(lb=0, ub=grb.GRB.INFINITY, name=f"distance_{v}")
+
+            distance_x = model.addVar()
+            model.addConstr(distance_x == local_x - center_x)
+
+            distance_y = model.addVar()
+            model.addConstr(distance_y == local_y - center_y)
+
+
+
+            # SOC constraint for the Euclidean distance
             model.addConstr(
-                a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+                distance * distance >= (distance_x) ** 2 + (distance_y ) ** 2,
+                name=f"soc_constraint_{v}"
             )
 
+            # Big-M constraint for activation/deactivation
+            model.addConstr(
+                distance <= radius + M * (1 - is_used[v]),
+                name=f"big_m_constraint_{v}"
+            )
 
 
 
@@ -402,7 +431,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     # optimizing (only checking feasibility)
     try:
         model.optimize()
-    except BaseException:
+    except KeyboardInterrupt:
         pass
 
     # checking if a feasible solution was found
@@ -413,4 +442,4 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
 
 for V, E, name in CITIES:
-    find_longest_tour_old(V, E, name = name, draw = False)
+    find_longest_tour_old(V, E, name = name, draw = False, SIDES = 12)
