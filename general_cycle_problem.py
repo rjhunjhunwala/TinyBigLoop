@@ -333,11 +333,9 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     model.setParam("TimeLimit", 18000)
     model.setParam("FuncNonLinear", 0)
     model.setParam("Presolve", 2)
-    if SIDES == 0 and MISOCP:
-        model.setParam("NonConvex", 1)
-        model.setParam("MIPFocus", 3)
-        model.setParam("Symmetry", 2)
-        model.setParam("Method", 3)
+    model.setParam("NonConvex", 1)
+    model.setParam("Heuristics", 0.15)
+    model.setParam("MIPFocus", 3)
 
     # binary variables indicating if arc (i,j) is used on the route or not
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -351,7 +349,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     model.update()
     model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
 
-    log_length = model.addVar(lb=7, ub=12)
+    log_length = model.addVar(lb=7, ub=11)
     model.addGenConstrLog(length, log_length)
 
     radius = model.addVar(lb=100, ub = 5000)
@@ -395,17 +393,15 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
                 for k in range(SIDES):
                     # Compute line parameters for the k-th side of the n-gon
                     angle = 2 * math.pi * k / SIDES
-                    next_angle = 2 * math.pi * (k + 1) / SIDES
 
                     # Line defined as (x, y) satisfying ax + by + c <= 0
                     # Derived from the center and a point on the edge
-                    a = math.sin(next_angle) - math.sin(angle)
-                    b = -(math.cos(next_angle) - math.cos(angle))
-                    c = -(a * radius * math.cos(angle) + b * radius * math.sin(angle))
+                    a = math.cos(angle)
+                    b = math.sin(angle)
 
                     # Big-M constraint to "turn off" the constraint when is_used[v] == 0
                     model.addConstr(
-                        a * (local_x - center_x) + b * (local_y - center_y) + c <= M * (1 - is_used[v])
+                        a * (local_x - center_x) + b * (local_y - center_y) <= radius + M * (1 - is_used[v])
                     )
             else:
 
@@ -458,4 +454,4 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
 
 for V, E, name in CITIES:
-    find_longest_tour_old(V, E, name = name, draw = False, SIDES = 0, MISOCP = True)
+    find_longest_tour_old(V, E, name = name, draw = True, SIDES = 12, MISOCP = False)
