@@ -32,7 +32,7 @@ func degToRad(deg float64) float64 {
 }
 
 func (n Node) tuple() string {
-	return fmt.Sprintf("(%f,%f)", n.lat, n.lon)
+	return fmt.Sprintf("(%g,%g)", n.lat, n.lon)
 }
 
 // haversin calculates the haversine of a value (sin²(value / 2))
