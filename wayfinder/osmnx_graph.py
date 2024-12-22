@@ -390,7 +390,7 @@ def process_vertex(v, local_v, edges, vertex_rtree, edge_rtree, road_width_thres
         intersecting_edges = [
             i.object
             for i in edge_rtree.intersection(road.bounds, objects=True)
-            if LineString([local_v[i.object[0]], local_v[i.object[1]]]).intersects(road)
+            if LineString([local_v[i.object[0]], local_v[i.object[1]]]).distance(road) < merge_distance_threshold
         ]
         for intersecting_edge in intersecting_edges:
             u, v = intersecting_edge
