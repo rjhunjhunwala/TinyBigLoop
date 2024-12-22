@@ -14,7 +14,7 @@ import sys
 sys.setrecursionlimit(10000)
 
 
-def clustered(V, E, threshold=24):
+def clustered(V, E, threshold=15):
     """
     Clusters the vertices of a graph based on spatial proximity and builds a cluster graph.
 
@@ -405,7 +405,7 @@ def process_vertex(v, local_v, edges, vertex_rtree, edge_rtree, road_width_thres
                     del edges[(u, v)]
 
 
-def simplify_graph(V, E, road_width_threshold=5, merge_distance_threshold=5):
+def simplify_graph(V, E, road_width_threshold=15, merge_distance_threshold=15):
     """
     Simplify the graph by processing vertices and merging/removing intersecting vertices and edges.
 
