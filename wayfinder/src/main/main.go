@@ -26,9 +26,9 @@ func main() {
 
 	// fmt.Printf("%+v\n", graph)
 
-	// fmt.Printf("%s", graph.GenPython(area))
+	fmt.Printf("%s", graph.GenPython(area))
 
-	fmt.Printf("%s", graph.GenSvg(area))
+	// fmt.Printf("%s", graph.GenSvg(area))
 
 	println("done")
 }
