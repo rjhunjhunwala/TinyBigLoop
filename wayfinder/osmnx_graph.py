@@ -405,7 +405,7 @@ def process_vertex(v, local_v, edges, vertex_rtree, edge_rtree, road_width_thres
                     del edges[(u, v)]
 
 
-def simplify_graph(V, E, road_width_threshold=5, merge_distance_threshold=5):
+def simplify_graph(V, E, road_width_threshold=10, merge_distance_threshold=10):
     """
     Simplify the graph by processing vertices and merging/removing intersecting vertices and edges.
 
