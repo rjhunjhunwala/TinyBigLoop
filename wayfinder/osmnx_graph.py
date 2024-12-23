@@ -47,6 +47,128 @@ def clustered(V, E, threshold=15):
     return NEW_V, NEW_E
 
 
+def force_planar(V, E):
+    """
+    Modify the graph to ensure planarity by removing edges that cross.
+
+    Parameters:
+        V (list of tuples): List of (lat, lon) vertices.
+        E (dict): Dictionary mapping edges (vertex pairs) to distances.
+
+    Returns:
+        V, E: Updated vertex list and edge dictionary with no edge crossings.
+    """
+    local_coords = list(project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+    TO_LAT_LON = dict(zip(local_coords, V))
+
+    # Copy E for modification
+    E_new = dict(E)
+
+    # Build an R-tree for efficient edge intersection checking
+    edge_rtree = index.Index()
+    edge_lines = {}
+    for edge_index, ((u, v), dist) in enumerate(E.items()):
+        local_u = LOCAL_V[u]
+        local_v = LOCAL_V[v]
+        edge_line = LineString([local_u, local_v])
+        edge_rtree.insert(edge_index, edge_line.bounds)
+        edge_lines[edge_index] = (u, v, edge_line)
+
+    # Check for crossings and resolve them by removing one edge
+    for edge_index, (u1, v1, edge_line_1) in edge_lines.items():
+        candidates = list(edge_rtree.intersection(edge_line_1.bounds))
+        for other_index in candidates:
+            if edge_index >= other_index:
+                continue  # Avoid duplicate checks
+            u2, v2, edge_line_2 = edge_lines[other_index]
+
+            # Skip if the edges share a vertex or we have already deleted
+            if len({u1, v1, u2, v2}) < 4 or (u1, v1) not in E_new or (u2, v2) not in E_new:
+                continue
+
+            # Check for intersection
+            if edge_line_1.intersects(edge_line_2):
+                # Remove the shorter edge (or arbitrarily remove one if lengths are equal)
+                if E_new.get((u1, v1), float('inf')) <= E_new.get((u2, v2), float('inf')):
+                    del E_new[(u1, v1)]
+                    del E_new[(v1, u1)]
+                else:
+                    del E_new[(u2, v2)]
+                    del E_new[(v2, u2)]
+
+    return V, E_new
+
+
+def handle_t(V, E, threshold=15):
+    # Create copies of V and E to avoid modifying the originals
+    V = V.copy()
+    E = E.copy()
+
+    local_coords = list(project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+    TO_LAT_LON = dict(zip(local_coords, V))
+
+    # Initialize the R-tree and insert edges
+    edge_index = index.Index()
+    edge_map = {}
+
+    for edge_id, ((u, v), length) in enumerate(E.items()):
+        if u < v:  # Ensure each edge is added only once
+            local_u, local_v = LOCAL_V[u], LOCAL_V[v]
+            line = LineString([local_u, local_v])
+            edge_index.insert(edge_id, line.bounds)
+            edge_map[edge_id] = (u, v, line)
+
+    # Check each vertex against edges in the R-tree
+    for vertex in V:
+        local_vertex = LOCAL_V[vertex]
+
+        # Query nearby edges
+        nearby_edges = list(edge_index.intersection((local_vertex[0] - threshold,
+                                                     local_vertex[1] - threshold,
+                                                     local_vertex[0] + threshold,
+                                                     local_vertex[1] + threshold)))
+
+        for edge_id in nearby_edges:
+            u, v, line = edge_map[edge_id]
+
+            # Skip edges that already contain this vertex
+            if vertex in {u, v}:
+                continue
+
+            # Check if the vertex is within the threshold distance of the edge
+            if line.distance(Point(local_vertex)) <= threshold:
+                if (u,v) not in E:
+                    continue
+                # Split the edge
+                new_vertex = vertex
+                
+                del E[(u, v)]
+                del E[(v, u)] # Remove the original edge
+
+                # Add the new edges
+                E[(u, new_vertex)] = geopy.distance.distance(u, new_vertex).meters
+                E[(new_vertex, v)] = geopy.distance.distance(new_vertex, v).meters
+
+                E[(new_vertex, u)] = geopy.distance.distance(u, new_vertex).meters
+                E[(v, new_vertex)] = geopy.distance.distance(new_vertex, v).meters
+
+                # Update the R-tree
+                new_local_vertex = LOCAL_V[new_vertex]
+                line1 = LineString([LOCAL_V[u], new_local_vertex])
+                line2 = LineString([new_local_vertex, LOCAL_V[v]])
+
+                edge_index.insert(len(edge_map), line1.bounds)
+                edge_map[len(edge_map)] = (u, new_vertex, line1)
+
+                edge_index.insert(len(edge_map), line2.bounds)
+                edge_map[len(edge_map)] = (new_vertex, v, line2)
+
+    return V, E
+
+
+
 import math
 
 
@@ -60,60 +182,6 @@ def calculate_angle(u, v):
     delta_y = y2 - y1
     angle = math.atan2(delta_y, delta_x)  # Angle in radians
     return math.degrees(angle)  # Convert to degrees
-
-
-def remove_degenerate_edges(V, Edges, angle_threshold=14):
-    """
-    Remove shorter edges that are within a certain angle threshold of another edge at a vertex.
-
-    Args:
-        V: List of vertices.
-        Edges: Dictionary mapping (u, v) -> length of edge (u, v).
-        angle_threshold: Angular threshold in degrees.
-
-    Returns:
-        Filtered Edges dictionary with redundant edges removed.
-    """
-    edges_to_remove = set()
-
-    # Group edges by vertex
-    vertex_to_edges = {v: [] for v in V}
-    for (u, v), length in Edges.items():
-        vertex_to_edges[u].append((v, length))
-        vertex_to_edges[v].append((u, length))
-
-    for vertex in V:
-        # Get all edges connected to this vertex
-        edges = vertex_to_edges[vertex]
-
-        # Calculate angles for all edges
-        angles = []
-        for neighbor, length in edges:
-            angle = calculate_angle(vertex, neighbor)
-            angles.append((angle, length, (vertex, neighbor)))
-
-        # Compare angles pairwise
-        for i in range(len(angles)):
-            for j in range(i + 1, len(angles)):
-                angle1, length1, edge1 = angles[i]
-                angle2, length2, edge2 = angles[j]
-
-                # Calculate the absolute angle difference
-                angle_diff = abs(angle1 - angle2)
-                print(angle_diff)
-
-                if 0 < angle_diff <= angle_threshold:
-                    # Mark the shorter edge for removal
-                    if length1 < length2:
-                        edges_to_remove.add(edge1)
-                    else:
-                        edges_to_remove.add(edge2)
-
-    # Create a new dictionary excluding the edges to remove
-    filtered_edges = {edge: length for edge, length in Edges.items() if
-                      edge not in edges_to_remove and (edge[1], edge[0]) not in edges_to_remove}
-
-    return V, filtered_edges
 
 
 from shapely.geometry import LineString, Point
@@ -265,7 +333,7 @@ def get_roads(place_name, threshold_distance=60, angle_threshold=10):
 
     # Now V is the list of (lat, lon) tuples, and E is the dictionary of edges with distances.
 
-    return remove_bridges_and_orphans(*clustered(V, E))
+    return remove_bridges_and_orphans(*force_planar(*handle_t(*clustered(V, E))))
 
 
 def remove_bridges_and_orphans(V, E):
