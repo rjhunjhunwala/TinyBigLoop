@@ -6,15 +6,14 @@ import geopy.distance
 HOBOKEN_NAME = "Hoboken, New Jersey, USA"
 
 from scipy.spatial import cKDTree
-from shapely.geometry import LineString, Point
-import numpy as np
+from rtree import index
 
 import sys
 
 sys.setrecursionlimit(10000)
 
 
-def clustered(V, E, threshold=24):
+def clustered(V, E, threshold=15):
     """
     Clusters the vertices of a graph based on spatial proximity and builds a cluster graph.
 
@@ -29,53 +28,23 @@ def clustered(V, E, threshold=24):
         dict: A dictionary where keys are (rep_1, rep_2) tuples representing cluster pairs,
               and values are distances (weights) between the clusters.
     """
-    threshold_rad = threshold / 6371000  # Convert threshold to radians (Earth radius in meters)
+    local_coords = list(project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+    TO_LAT_LON = dict(zip(local_coords, V))
 
-    # Convert vertices to a NumPy array (in radians for great-circle distance)
-    V_array = np.radians(V)
-    n = len(V)
-    unvisited_mask = np.ones(n, dtype=bool)  # Track unvisited vertices
-    clusters = []  # Representatives of each cluster
-    vertex_to_cluster = {}  # Map vertex index to its cluster
+    merged = DisjointSet(local_coords)
 
-    tree = cKDTree(V_array)
-    # Step 1: Cluster vertices
-    while unvisited_mask.any():
-        # Find the first unvisited vertex
-        rep_idx = np.argmax(unvisited_mask)
-        rep = V[rep_idx]
-        clusters.append(rep)
-        cluster_idx = len(clusters) - 1
+    tree = cKDTree(local_coords)
+    for coord in local_coords:
+        nearby = tree.query_ball_point(coord, r=threshold)
+        for idx in nearby:
+            merged.union(coord, local_coords[idx])
 
-        # Mark the representative as visited
-        unvisited_mask[rep_idx] = False
-        vertex_to_cluster[rep] = cluster_idx
+    NEW_V = list(set(TO_LAT_LON[merged.find(coord)] for coord in local_coords))
 
-        # Query for all points within the threshold
-        indices = tree.query_ball_point(V_array[rep_idx], r=threshold_rad)
+    NEW_E = {(TO_LAT_LON[merged.find(LOCAL_V[u])], TO_LAT_LON[merged.find(LOCAL_V[v])]): w for (u, v), w in E.items()}
 
-        # Mark these points as part of the current cluster
-        for idx in indices:
-            if unvisited_mask[idx]:
-                vertex_to_cluster[V[idx]] = cluster_idx
-                unvisited_mask[idx] = False
-
-    # Step 2: Build cluster graph edges
-    cluster_edges = {}
-    for (v1, v2), dist in E.items():
-        assert v1 in V
-        assert v2 in V
-        cluster1 = clusters[vertex_to_cluster[v1]]
-        cluster2 = clusters[vertex_to_cluster[v2]]
-        if cluster1 != cluster2:
-            # Ensure undirected edges are represented consistently
-            edge_key = (cluster1, cluster2)
-            if edge_key not in cluster_edges:
-                cluster_edges[edge_key] = dist
-            else:
-                cluster_edges[edge_key] = min(cluster_edges[edge_key], dist)
-
-    return clusters, cluster_edges
+    return NEW_V, NEW_E
 
 
 import math
@@ -242,89 +211,6 @@ def angle(line1, line2):
     return angle_degrees
 
 
-from rtree import index
-
-
-def filter_footpaths_near_roads(G, threshold_distance=15, angle_threshold=5):
-    """
-    Filter footpaths near roads based on proximity and angular alignment.
-
-    Parameters:
-        G (networkx.Graph): Input graph with road and footpath data.
-        threshold_distance (float): Maximum distance (in meters) to classify a footpath as near a road.
-        angle_threshold (float): Maximum angle (in degrees) to classify a footpath as aligned with a road.
-
-    Returns:
-        networkx.Graph: Filtered graph with unwanted footpaths removed.
-    """
-
-    # Project nodes to local coordinates
-    V = [(G.nodes[node]["y"], G.nodes[node]["x"]) for node in G.nodes()]
-
-    # Reverse mapping for local coordinates back to lat/lon
-    LOCAL_TREE = cKDTree(local_coords)
-
-    # Use an R-tree for spatial indexing of road LineStrings
-    road_index, road_segments = index.Index(), []
-    edges_to_remove = []
-    foot_segments = []
-    foot_lines = set()
-    not_relevant = []
-
-    # Separate edges into roads and footpaths
-    for u, v, data in list(G.edges(data=True)):
-        highway = data.get("highway", None)
-        footway = data.get("footway", None)
-
-        local_u = LOCAL_V[(G.nodes[u]["y"], G.nodes[u]["x"])]
-        local_v = LOCAL_V[(G.nodes[v]["y"], G.nodes[v]["x"])]
-        edge_line = LineString([local_u, local_v])
-
-        if highway in ["trunk", "primary", "secondary", "tertiary", "service", "pedestrian", "footway", "unclassified",
-                       "residential", "living_street"]:
-            # Store road segments in the R-tree for fast lookup
-            segment_id = len(road_segments)
-            road_segments.append(edge_line)
-            road_index.insert(segment_id, edge_line.bounds)
-            foot_segments.append((u, v))
-            if highway == "footway":
-                foot_lines.add(edge_line)
-        if highway == "sidewalk" or footway == "sidewalk":
-            not_relevant.append(edge_line)
-
-    G.remove_edges_from(not_relevant)
-
-    for idx, edge_line in enumerate(road_segments):
-        if edge_line not in foot_lines:
-            continue
-        # Check if the footpath is near any road
-        # Get the bounding box of the LineString
-        minx, miny, maxx, maxy = edge_line.bounds
-        buffer_distance = threshold_distance
-        # Expand the bounding box by the buffer distance
-        expanded_box = minx - buffer_distance, miny - buffer_distance, maxx + buffer_distance, maxy + buffer_distance
-
-        possible_matches = list(road_index.intersection(expanded_box))
-        for match_id in possible_matches:
-            road_line = road_segments[match_id]
-            if match_id < idx and (road_line != edge_line) and (
-                    1 < edge_line.distance(road_line) < threshold_distance) and (
-                    angle(edge_line, road_line) < angle_threshold):
-                u, v = foot_segments[idx]
-                edges_to_remove.append((u, v))
-                break  # Remove footpath once a match is found
-
-    # Remove identified edges and self-loops
-    G.remove_edges_from(edges_to_remove)
-
-    G.remove_edges_from(list(nx.selfloop_edges(G)))
-    return G
-
-
-from rtree import index
-from shapely.geometry import LineString, box, Point
-
-
 class DisjointSet():
     def __init__(self, V):
         # Initialize parent and rank for each element
@@ -351,100 +237,6 @@ class DisjointSet():
                 self.parent[root_v] = root_u
                 self.rank[root_u] += 1
 
-
-def process_vertex(v, local_v, edges, vertex_rtree, edge_rtree, road_width_threshold, merge_distance_threshold, merged):
-    """
-    Process a single vertex:
-    - Construct a "road" rectangle for each edge originating from the vertex.
-    - Merge intersecting vertices and remove intersecting edges.
-    """
-
-    if v not in local_v:
-        return  # Skip if the vertex has already been merged
-
-    v_coord = local_v[v]
-    connected_edges = [((v, u), edges[(v, u)]) for u in local_v if (v, u) in edges or (u, v) in edges]
-
-    for (v1, v2), weight in connected_edges:
-        # Create the "road" rectangle for the edge
-        u_coord = local_v[v2]
-        line = LineString([v_coord, u_coord])
-        road = line.buffer(road_width_threshold, cap_style=2)
-
-        # Find intersecting vertices and merge them
-        intersecting_vertices = [
-            i.object
-            for i in vertex_rtree.intersection(road.bounds, objects=True)
-            if road.contains(Point(i.object))
-        ]
-        for intersecting_vertex in intersecting_vertices:
-            if intersecting_vertex == v2 or intersecting_vertex == v1:
-                continue  # Skip the destination vertex itself
-
-            intersecting_coord = local_v[intersecting_vertex]
-            distance = Point(intersecting_coord).distance(Point(u_coord))
-            if distance < merge_distance_threshold:
-                merged.union(v2, intersecting_vertex)
-
-        # Find intersecting edges and remove them
-        intersecting_edges = [
-            i.object
-            for i in edge_rtree.intersection(road.bounds, objects=True)
-            if LineString([local_v[i.object[0]], local_v[i.object[1]]]).distance(road) < merge_distance_threshold
-        ]
-        for intersecting_edge in intersecting_edges:
-            u, v = intersecting_edge
-
-            if u not in (v1, v2) and v not in (v1, v2):
-
-                assert v1 in local_v
-                assert v2 in local_v
-                assert u in local_v
-                assert v in local_v
-                if (u, v) in edges:
-                    del edges[(u, v)]
-
-
-def simplify_graph(V, E, road_width_threshold=10, merge_distance_threshold=10):
-    """
-    Simplify the graph by processing vertices and merging/removing intersecting vertices and edges.
-
-    Args:
-        V: List of original vertices as (lat, lon) pairs.
-        LOCAL_V: Dictionary mapping (lat, lon) to local coordinates.
-        E: Dictionary mapping (u, v) -> edge weight.
-        road_width_threshold: Threshold for the road width.
-        merge_distance_threshold: Threshold for merging vertices.
-
-    Returns:
-        Simplified V and E.
-    """
-
-    local_coords = list(project_to_local_plane(V))
-    merged = DisjointSet(V)
-    LOCAL_V = dict(zip(V, local_coords))
-
-    # Create R-tree instances for vertices and edges
-    vertex_rtree = index.Index()
-    edge_rtree = index.Index()
-
-    for v, coord in LOCAL_V.items():
-        vertex_rtree.insert(id(v), (
-        coord[0] - road_width_threshold, coord[1] - road_width_threshold , coord[0] + road_width_threshold,
-        coord[1] + road_width_threshold), obj=v)
-
-    for (u, v), weight in E.items():
-        line = LineString([LOCAL_V[u], LOCAL_V[v]])
-        edge_rtree.insert(id((u, v)), line.bounds, obj=(u, v))
-
-    # Process each vertex
-    for v in list(LOCAL_V.keys()):
-        process_vertex(v, LOCAL_V, E, vertex_rtree, edge_rtree, road_width_threshold, merge_distance_threshold, merged)
-
-    # Create updated V and E
-    V = list(LOCAL_V.keys())
-    E = {(merged.find(u), merged.find(v)): w for (u, v), w in E.items()}
-    return V, E
 
 
 def get_roads(place_name, threshold_distance=60, angle_threshold=10):
@@ -473,7 +265,7 @@ def get_roads(place_name, threshold_distance=60, angle_threshold=10):
 
     # Now V is the list of (lat, lon) tuples, and E is the dictionary of edges with distances.
 
-    return remove_bridges_and_orphans(*simplify_graph(*clustered(V, E)))
+    return remove_bridges_and_orphans(*clustered(V, E))
 
 
 def remove_bridges_and_orphans(V, E):
