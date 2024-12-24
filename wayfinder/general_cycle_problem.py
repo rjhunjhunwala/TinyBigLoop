@@ -75,9 +75,10 @@ def get_grid(SIZE):
 
 all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 
-u, v = next(iter(all_hoboken_e))
+all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
+    [all_jc_v, all_jc_e, "all_jc", None],
     [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE],
     [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE],
     [*osmnx_graph.remove_bridges_and_orphans(*new_part_jc(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE]
@@ -298,7 +299,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     OLD_V, OLD_E = V, E
     BASE_V, BASE_E = cleaned(OLD_V, OLD_E)
 
-    if any(v not in BASE_V for v in seed):
+    if seed and any(v not in BASE_V for v in seed):
         seed = None
 
     draw_graph(BASE_E, BASE_V)

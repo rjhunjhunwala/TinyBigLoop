@@ -4,6 +4,7 @@ import geopy.distance
 
 # Step 1: Get OSM data for Hoboken
 HOBOKEN_NAME = "Hoboken, New Jersey, USA"
+JC_NAME = "Jersey City, New Jersey, USA"
 
 from scipy.spatial import cKDTree
 from rtree import index
@@ -13,7 +14,7 @@ import sys
 sys.setrecursionlimit(10000)
 
 
-def clustered(V, E, threshold=15):
+def clustered(V, E, threshold=13):
     """
     Clusters the vertices of a graph based on spatial proximity and builds a cluster graph.
 
@@ -100,7 +101,98 @@ def force_planar(V, E):
     return V, E_new
 
 
-def handle_t(V, E, threshold=15):
+def remove_shallow_angles(V, E, angle_threshold=7):
+    """
+    Remove one of two edges connected to the same vertex if the angle between them is less than a given threshold.
+
+    Parameters:
+        V (list of tuples): List of (lat, lon) verticR43es.
+        E (dict): Dictionary mapping edges (vertex pairs) to distances.
+        angle_threshold (float): The angle threshold in degrees for removing edges.
+
+    Returns:
+        V, E: Updated vertex list and edge dictionary with no shallow-angle intersections.
+    """
+
+    def calculate_angle(line1, line2):
+        """
+        Calculate the absolute angle between two lines using cosine similarity.
+        """
+
+        def get_vector(line):
+            x1, y1 = line.coords[0]
+            x2, y2 = line.coords[-1]
+            return np.array([x2 - x1, y2 - y1])
+
+        vector1 = get_vector(line1)
+        vector2 = get_vector(line2)
+
+        # Normalize vectors
+        norm1 = np.linalg.norm(vector1)
+        norm2 = np.linalg.norm(vector2)
+        if norm1 == 0 or norm2 == 0:
+            return 0  # Assume zero angle if one vector is degenerate
+
+        vector1 = vector1 / norm1
+        vector2 = vector2 / norm2
+
+        # Compute cosine similarity
+        cosine_similarity = np.dot(vector1, vector2)
+        cosine_similarity = np.clip(cosine_similarity, -1.0, 1.0)
+        angle_radians = np.arccos(cosine_similarity)
+        angle_degrees = np.degrees(angle_radians)
+
+        return angle_degrees
+
+    # Step 1: Project vertices to local coordinates
+    local_coords = list(project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+    TO_LAT_LON = dict(zip(local_coords, V))
+
+    # Step 2: Construct adjacency matrix
+    adjacency = {v: [] for v in V}
+    for (u, v), dist in E.items():
+        adjacency[u].append((v, dist))
+
+    # Step 3: Process each vertex and its edges
+    E_new = dict(E)
+    for vertex in V:
+        edges = adjacency[vertex]
+        # Compare each pair of edges
+        for i in range(len(edges)):
+            v1, dist1 = edges[i]
+            u1 = vertex
+            local_u1 = LOCAL_V[u1]
+            local_v1 = LOCAL_V[v1]
+            edge_line_1 = LineString([local_u1, local_v1])
+
+            for j in range(i + 1, len(edges)):
+                v2, dist2 = edges[j]
+                u2 = vertex
+                local_u2 = LOCAL_V[u]
+                local_v2 = LOCAL_V[v2]
+                edge_line_2 = LineString([local_u2, local_v2])
+
+                # Ensure the edges share the vertex
+                if (u1, v1 ) not in E_new or  ((u2, v2) not in E_new):
+                    continue
+
+                # Calculate the angle between the two edges
+                angle_between = calculate_angle(edge_line_1, edge_line_2)
+
+                if 0.001 < angle_between < angle_threshold and dist1 > 20 and dist2 > 20:
+                    # Remove the shorter edge
+                    if dist1 <= dist2:
+                        E_new.pop((u1, v1), None)
+                        E_new.pop((v1, u1), None)
+                    else:
+                        E_new.pop((u2, v2), None)
+                        E_new.pop((v2, u2), None)
+
+    return V, E_new
+
+
+def handle_t(V, E, threshold=16):
     # Create copies of V and E to avoid modifying the originals
     V = V.copy()
     E = E.copy()
@@ -332,8 +424,21 @@ def get_roads(place_name, threshold_distance=60, angle_threshold=10):
         E[(v, u)] = distance
 
     # Now V is the list of (lat, lon) tuples, and E is the dictionary of edges with distances.
-
-    return remove_bridges_and_orphans(*force_planar(*handle_t(*clustered(V, E))))
+    
+    output = (V, E)
+    
+    transforms = [
+        clustered,
+        handle_t,
+        force_planar,
+        remove_bridges_and_orphans
+    ]
+    
+    for transform in transforms:
+        output = transform(*output)
+    
+    
+    return output
 
 
 def remove_bridges_and_orphans(V, E):
