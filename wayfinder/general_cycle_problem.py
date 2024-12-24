@@ -7,6 +7,7 @@ import gpx_two
 import hoboken
 import hoboken_route
 import all_hoboken_route
+import all_jc_route
 import jerseycity
 import jerseycity_route
 import osmnx_graph
@@ -78,10 +79,11 @@ all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
-    [all_jc_v, all_jc_e, "all_jc", None],
-    [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE],
-    [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE],
-    [*osmnx_graph.remove_bridges_and_orphans(*new_part_jc(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE]
+    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None],
+    [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE],
+    # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE],
+    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE],
+    # [*osmnx_graph.remove_bridges_and_orphans(*new_part_jc(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE]
 ]
 
 def get_indegrees(E):
@@ -180,6 +182,7 @@ def real_path(tour, ORIG_V, ORIG_E):
     return output
 
 def draw_graph(E, V, screen=None, color="red"):
+    
     min_x = min(V, key=lambda v: v[0])[0]
     min_y = min(V, key=lambda v: v[1])[1]
     max_x = max(V, key=lambda v: v[0])[0]
@@ -188,9 +191,11 @@ def draw_graph(E, V, screen=None, color="red"):
     SCREEN = 720
     to_screen = lambda x, y: (
         (SCREEN * ((x - min_x) / (max_x - min_x) - 0.5)), (SCREEN * ((y - min_y) / (max_y - min_y) - 0.5)))
-
-    import turtle
-
+    try:
+        import turtle
+    except:
+        print("Turtle not found f it.")
+        return
     if not screen:
         turtle.reset()
         # Set up the screen
@@ -324,7 +329,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
         # Variables for vertices used
         is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-        model.setParam("TimeLimit", 24000 * mul)
+        model.setParam("TimeLimit", 144000)
         model.setParam("FuncNonLinear", 0)
         model.setParam("Presolve", 2)
         model.setParam("NonConvex", 1)

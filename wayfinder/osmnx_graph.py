@@ -101,7 +101,7 @@ def force_planar(V, E):
     return V, E_new
 
 
-def remove_shallow_angles(V, E, angle_threshold=7):
+def remove_shallow_angles(V, E, angle_threshold=25):
     """
     Remove one of two edges connected to the same vertex if the angle between them is less than a given threshold.
 
@@ -180,7 +180,7 @@ def remove_shallow_angles(V, E, angle_threshold=7):
                 # Calculate the angle between the two edges
                 angle_between = calculate_angle(edge_line_1, edge_line_2)
 
-                if 0.001 < angle_between < angle_threshold and dist1 > 20 and dist2 > 20:
+                if 0.001 < angle_between < angle_threshold and dist1 > 80 and dist2 > 80:
                     # Remove the shorter edge
                     if dist1 <= dist2:
                         E_new.pop((u1, v1), None)
@@ -431,6 +431,7 @@ def get_roads(place_name, threshold_distance=60, angle_threshold=10):
         clustered,
         handle_t,
         force_planar,
+        remove_shallow_angles,
         remove_bridges_and_orphans
     ]
     
