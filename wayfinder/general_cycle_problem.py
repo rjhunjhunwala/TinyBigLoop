@@ -50,11 +50,11 @@ def is_point_in_polygon(polygon, point):
 def new_part_jc(V, E):
     """Return the 'new' part of JC"""
     polygon = [
-        (-74.08434, 40.7305261),
+        (-74.09434, 40.7505261),
         (- 74.0976437, 40.7116614),
-        (- 74.077216, 40.7015763),
-        (- 74.0612515, 40.7229158),
-        (- 74.08434, 40.7305261),
+        (- 74.077216, 40.6915763),
+        (- 74.0512515, 40.7229158),
+        (- 74.09434, 40.7505261),
     ]
 
     polygon = [(v, u) for u,v in polygon]
@@ -87,7 +87,7 @@ CITIES = [
     # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, None],
     # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE, HOBOKEN_START],
     # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START],
-    [*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E), "jerseycity", jerseycity_route.ROUTE, JC_START]
+    [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START]
 ]
 
 def get_indegrees(E):
@@ -360,8 +360,8 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         model.setParam("NonConvex", 1)
         model.setParam("Heuristics", 0.3)
         model.setParam("Symmetry", 2)
-        model.setParam("Cuts", 3)
-        model.setParam("FuncPieces", 200)
+        # model.setParam("Cuts", 3)
+        model.setParam("FuncPieces", 80)
 
         # binary variables indicating if arc (i,j) is used on the route or not
         did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
