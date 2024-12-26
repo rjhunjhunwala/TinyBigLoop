@@ -1,5 +1,6 @@
 from sys import stdout as out
 import gurobipy as grb
+from gurobipy import GRB
 from typing import List
 import math
 
@@ -11,6 +12,9 @@ import all_jc_route
 import jerseycity
 import jerseycity_route
 import osmnx_graph
+
+HOBOKEN_START = (40.742712, -74.033422)
+JC_START = (40.718516, -74.075073)
 
 def is_point_in_polygon(polygon, point):
     """
@@ -74,16 +78,16 @@ def get_grid(SIZE):
                 E[((new_i, new_j), (i, j))] = 1
     return V, E
 
-all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
+# all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 
-all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
+# all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
-    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None],
-    [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE],
-    # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE],
-    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE],
-    # [*osmnx_graph.remove_bridges_and_orphans(*new_part_jc(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE]
+    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None, None],
+    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, None],
+    # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE, HOBOKEN_START],
+    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START],
+    [*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E), "jerseycity", jerseycity_route.ROUTE, JC_START]
 ]
 
 def get_indegrees(E):
@@ -300,14 +304,35 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
     return old_path
 
 
-def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES = 0, MISOCP = False, seed = None) -> List:
+def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0, MISOCP = False, seed = None, start=None) -> List:
     OLD_V, OLD_E = V, E
     BASE_V, BASE_E = cleaned(OLD_V, OLD_E)
 
     if seed and any(v not in BASE_V for v in seed):
         seed = None
 
-    draw_graph(BASE_E, BASE_V)
+    def callback(model, where):
+        """
+        Every time we get a feasible solution, consider examining it.
+        Then use a simple BFS to augment the solution.
+        :param model:
+        :param where:
+        :return:
+        """
+        if where == GRB.Callback.MIPSOL:
+            # MIP solution callback
+            nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
+            obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+            solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
+            x = [1, 2, 3]
+            print(
+                f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, "
+                f"sol {solcnt:.0f}, x[0] = {x[0]:g} ****"
+            )
+
+
+
+
 
 
     NUM_ATTEMPTS = 3 if seed == None else 0
@@ -333,11 +358,10 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
         model.setParam("FuncNonLinear", 0)
         model.setParam("Presolve", 2)
         model.setParam("NonConvex", 1)
-        model.setParam("Heuristics", 0.2)
-        model.setParam("MIPFocus", 1)
+        model.setParam("Heuristics", 0.3)
         model.setParam("Symmetry", 2)
-
-        model.setParam("Cuts", 0)
+        model.setParam("Cuts", 3)
+        model.setParam("FuncPieces", 200)
 
         # binary variables indicating if arc (i,j) is used on the route or not
         did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -347,22 +371,27 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
         index = {v: model.addVar() for v in V}
 
         # Length of the tour
-        length = model.addVar(lb = 200, ub = 60000)
+
+        MAX_LENGTH = 5e4 # 50k
+        MIN_LENGTH = 100
+
+        length = model.addVar(lb = MIN_LENGTH, ub = MAX_LENGTH)
         model.update()
         model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
 
-        log_length = model.addVar(lb=5, ub=11)
+        log_length = model.addVar(lb=math.log(MIN_LENGTH), ub=math.log(MAX_LENGTH))
         model.addGenConstrLog(length, log_length)
 
-        radius = model.addVar(lb=50, ub = 2000)
+        MAX_RADIUS = 4000
+        MIN_RADIUS = 500
 
-        # Compute the diameter of the n-gon
-        diameter = model.addVar(lb=100, ub = 4000)
+        radius = model.addVar(lb=MIN_RADIUS, ub = MAX_RADIUS)
+
+        diameter = model.addVar(lb=MIN_RADIUS * 2, ub = MAX_RADIUS * 2)
         model.addConstr(diameter == 2 * radius)
 
-        # Center and radius of the n-gon
-        center_x = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
-        center_y = model.addVar(lb=-grb.GRB.INFINITY, ub = grb.GRB.INFINITY)
+        log_diameter = model.addVar(lb=math.log(MIN_RADIUS * 2), ub = math.log(MAX_RADIUS * 2))
+        model.addGenConstrLog(diameter, log_diameter)
 
         # constraint : enter each city only once
         for i in V:
@@ -373,58 +402,14 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
 
         # Enforce n-gon half-space constraints using Big-M
-        M = 5e4  # A sufficiently large constant Compute this reasonably.
+        M = 4e3  # A sufficiently large constant Compute this reasonably.
 
-        if SIDES == 0 and not MISOCP:
-            distances = {(u, v): haversine(*u, *v) for u in V for v in V}
-            is_center = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
-            model.addConstr(grb.quicksum(used for used in is_center.values()) == 1)
+        distances = {(u, v): haversine(*u, *v) for u in V for v in V}
+        is_center = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+        model.addConstr(grb.quicksum(used for used in is_center.values()) == 1)
 
-            for v in V:
-
-                model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V))
-
-        else:
-
-            for v, (local_x, local_y) in LOCAL_V.items():
-                if SIDES != 0:
-
-                    for k in range(SIDES):
-                        # Compute line parameters for the k-th side of the n-gon
-                        angle = 2 * math.pi * k / SIDES
-
-                        # Line defined as (x, y) satisfying ax + by + c <= 0
-                        # Derived from the center and a point on the edge
-                        a = math.cos(angle)
-                        b = math.sin(angle)
-
-                        # Big-M constraint to "turn off" the constraint when is_used[v] == 0
-                        model.addConstr(
-                            a * (local_x - center_x) + b * (local_y - center_y) <= radius + M * (1 - is_used[v])
-                        )
-                else:
-
-                    if MISOCP:
-                        # Auxiliary variable for the distance
-                        distance = model.addVar(lb=100, ub=5000, name=f"distance_{v}")
-                        y_diff= model.addVar()
-                        model.addConstr(y_diff == local_x - center_y )
-
-                        model.addConstr( (local_x - center_x)**2 + (y_diff) ** 2 <= distance * distance, "rotated_cone")
-
-                        assert (local_y ** 2  + local_x ** 2 <= 5000000)
-
-                        # Big-M constraint for activation/deactivation
-                        model.addConstr(
-                          distance <= radius + (1 - is_used[v]) * M,
-                           name=f"big_m_constraint_{v}"
-                        )
-
-
-
-
-        log_diameter = model.addVar(lb=6, ub = 8)
-        model.addGenConstrLog(diameter, log_diameter)
+        for v in V:
+            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V))
 
         model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
 
@@ -433,6 +418,27 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
         # Only one magic source, index = 0
         model.addConstr(grb.quicksum(is_magic.values()) <= 1)
+
+        if start:
+            magic_v = min(V, key=lambda u: haversine(*start, *u))
+            model.addConstr(is_magic[magic_v] == 1)
+
+            neighbors = set()
+            for u, v in E:
+                if u == magic_v:
+                    neighbors.add(v)
+                elif v == magic_v:
+                    neighbors.add(u)
+            neighbors = sorted(list(neighbors))
+            # break the symmetry,
+            # The outgoing edge must not come after the incoming edge.
+
+            for i in range(len(neighbors) - 1):
+                for j in range(i + 1, len(neighbors)):
+                    u = neighbors[i]
+                    v = neighbors[j]
+                    model.addConstr(did_use_edge[(u, magic_v)] + did_use_edge[(v, magic_v)] <= 1)
+
 
         # subtour elimination
         for e in E:
@@ -451,7 +457,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
 
         # optimizing (only checking feasibility)
         try:
-            model.optimize()
+            model.optimize(callback)
         except KeyboardInterrupt:
             pass
 
@@ -463,7 +469,7 @@ def find_longest_tour_old(V, E, name="hoboken", draw = True, write = True, SIDES
     return seed
 
 
-for V, E, name, seed in CITIES:
-    find_longest_tour_old(V, E, name = name, write = True, draw = True, SIDES = 0, MISOCP = False, seed = seed )
+for V, E, name, seed, start in CITIES:
+    find_longest_tour(V, E, name = name, write = True, draw = False, SIDES = 0, MISOCP = False, seed = seed, start = start )
 
 breakpoint()
