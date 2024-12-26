@@ -362,6 +362,7 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         model.setParam("Symmetry", 2)
         model.setParam("Cuts", 3)
         model.setParam("FuncPieces", 80)
+        model.setParam("MIPGap", 0.003)
 
         # binary variables indicating if arc (i,j) is used on the route or not
         did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
