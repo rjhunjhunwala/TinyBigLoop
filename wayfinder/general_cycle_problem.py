@@ -1,14 +1,16 @@
 from sys import stdout as out
 import gurobipy as grb
 from gurobipy import GRB
-from typing import List
+from typing import List, Optional
 import math
+import numpy as np
 
 import gpx_two
 import hoboken
 import hoboken_route
 import all_hoboken_route
 import all_jc_route
+import new_jc_route
 import jerseycity
 import jerseycity_route
 import osmnx_graph
@@ -50,11 +52,11 @@ def is_point_in_polygon(polygon, point):
 def new_part_jc(V, E):
     """Return the 'new' part of JC"""
     polygon = [
-        (-74.09434, 40.7505261),
-        (- 74.0976437, 40.7116614),
+        (-74.10434, 40.7605261),
+        (- 74.0976437, 40.7016614),
         (- 74.077216, 40.6915763),
-        (- 74.0512515, 40.7229158),
-        (- 74.09434, 40.7505261),
+        (- 74.0412515, 40.7229158),
+        (- 74.10434, 40.7605261),
     ]
 
     polygon = [(v, u) for u,v in polygon]
@@ -78,17 +80,27 @@ def get_grid(SIZE):
                 E[((new_i, new_j), (i, j))] = 1
     return V, E
 
-# all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
+all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 
-# all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
+all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
-    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None, None],
-    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, None],
+    # [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
+    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
+    [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
     # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE, HOBOKEN_START],
     # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START],
-    [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START]
 ]
+
+def bootstrap(center, cycle: List, V, E):
+    """
+    Given a
+    :return:
+    """
+
+    cur_radius = max(max(haversine(*u, *v) for u in V) for v in V)
+
+
 
 def get_indegrees(E):
     in_deg = dict()
@@ -324,11 +336,34 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
             nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
             obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
             solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
-            x = [1, 2, 3]
+
+            # Get the current solution values for length and diameter
+            length_val = model.cbGetSolution(length)
+            diameter_val = model.cbGetSolution(diameter)
+
+            # Calculate the score for the current tour
+            score = (length_val) / diameter_val
+
+            sol = model.cbGetSolution(model.getVars())
+
+            model.cbSetSolution(model.getVars(), sol)
+
+            # Add the cut: length >= score * diameter
+            seed_edges = {(seed[i], seed[i+1]) for i in range(len(seed) - 1)}
+
+            vals = model.cbGetSolution(list(did_use_edge[e] for e in E))
+            incumbent = dict(zip(list(E), vals))
+
+            if any(int(e in seed_edges) != int(incumbent[e] + .01) for e in E):
+                model.cbLazy(length >= score * diameter)
+
             print(
                 f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, "
-                f"sol {solcnt:.0f}, x[0] = {x[0]:g} ****"
+                f"sol {solcnt:.0f},, score = {score} ****"
             )
+
+
+
 
 
 
@@ -361,8 +396,11 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         model.setParam("Heuristics", 0.3)
         model.setParam("Symmetry", 2)
         model.setParam("Cuts", 3)
-        model.setParam("FuncPieces", 80)
         model.setParam("MIPGap", 0.003)
+        model.setParam("FeasibilityTol", .003)
+        model.setParam("LazyConstraints", 1)
+        model.setParam("StartNodeLimit", 1000)
+        model.setParam("FuncPieces", 150)
 
         # binary variables indicating if arc (i,j) is used on the route or not
         did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
@@ -373,7 +411,7 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
 
         # Length of the tour
 
-        MAX_LENGTH = 5e4 # 50k
+        MAX_LENGTH = 4e4 # 40k (roughly a marathon)
         MIN_LENGTH = 100
 
         length = model.addVar(lb = MIN_LENGTH, ub = MAX_LENGTH)
@@ -421,8 +459,9 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         model.addConstr(grb.quicksum(is_magic.values()) <= 1)
 
         if start:
-            magic_v = min(V, key=lambda u: haversine(*start, *u))
+            magic_v = min(V if not seed else seed, key=lambda u: haversine(*start, *u))
             model.addConstr(is_magic[magic_v] == 1)
+            model.addConstr(is_center[magic_v] == 1)
 
             neighbors = set()
             for u, v in E:
@@ -445,11 +484,13 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         for e in E:
             i, j = e
             model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_magic[i] >= index[j] - n)
+            model.setAttr("BranchPriority", did_use_edge[e], E[e])
+
         if seed:
             # model.setParam("StartNodeLimit", 3000)
             try:
                 for v in is_magic:
-                    is_magic[v].start = int(seed[0] == v)
+                    is_magic[v].start = int((seed[0] if not start else magic_v) == v)
 
                 for i in range(len(seed ) - 1):
                     did_use_edge[seed[i], seed[i+1]].start = 1
