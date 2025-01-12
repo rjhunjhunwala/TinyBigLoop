@@ -86,19 +86,12 @@ all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
     # [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
-    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
-    [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
-    # [all_hoboken_v, all_hoboken_e, "all_hoboken", all_hoboken_route.ROUTE, HOBOKEN_START],
+    [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None, JC_START],
+    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
+    # [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
     # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START],
 ]
 
-def bootstrap(center, cycle: List, V, E):
-    """
-    Given a
-    :return:
-    """
-
-    cur_radius = max(max(haversine(*u, *v) for u in V) for v in V)
 
 
 
@@ -273,31 +266,34 @@ def haversine(lat1, lon1, lat2, lon2):
 
 def score(route):
     if not route:
-        return 0
+        return .00001, 100000, 0
+
     distance = 0
+
     for u in route:
         for v in route:
             distance = max(distance, haversine(*u,*v))
     lent = sum(haversine(*route[i], *route[i+1]) for i in range(len(route) - 1))
-    return lent / distance
+    return lent, distance, lent / distance
 
 
 def edges(out_list):
     return [[out_list[i], out_list[i + 1]] for i in range(len(out_list) - 1)]
 
-def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw, write, seed):
+def selected(V, E, did_use_edge, magic_v):
     out_list = []
-    s = nc = max(V, key=lambda v: is_magic[v].x)
-    print("Len found " + str(model.objVal))
-    print(nc)
+    s = nc = magic_v if magic_v else max((edge for edge in did_use_edge), key = lambda e: did_use_edge[e].x)[0]
     out_list.append(nc)
     while True:
-
         nc = [i for i in V if (nc, i) in E and did_use_edge[(nc, i)].x >= 0.99][0]
-        print(nc)
         out_list.append(nc)
         if nc == s:
             break
+    return out_list
+
+def examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw, write, seed, magic_v):
+    out_list = selected(V, E, did_use_edge, magic_v)
+
     old_path = out_list
     out_list = real_path(out_list, OLD_V, OLD_E)
     if draw:
@@ -306,7 +302,9 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
         old_clean = real_path(seed, OLD_V, OLD_E)
         old_score, new_score = score(old_clean), score(out_list)
 
-        print(f"Old score: {old_score} New Score: {new_score}")
+        print(f"Old score: {old_score[-1]} New Score: {new_score[-1]}")
+        print(f"New tour is {new_score[0] / 1000:.2f}k and {new_score[1] / 1000:.2f}k diameter")
+        print(f"Old tour is {old_score[0] / 1000:.2f}k and {old_score[1] / 1000:.2f}k diameter")
 
         if new_score > old_score:
             with open(name + "_route.py", "w") as f:
@@ -316,9 +314,13 @@ def examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, dr
     return old_path
 
 
-def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0, MISOCP = False, seed = None, start=None) -> List:
+def find_longest_tour(V, E, name="hoboken", draw = True, write = True, seed = None, start=None, dfj=False) -> List:
     OLD_V, OLD_E = V, E
     BASE_V, BASE_E = cleaned(OLD_V, OLD_E)
+
+    if draw:
+        draw_graph(list(E), V, color="blue")
+
 
     if seed and any(v not in BASE_V for v in seed):
         seed = None
@@ -331,6 +333,13 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         :param where:
         :return:
         """
+        if where == GRB.Callback.MIP and can_kill:
+            objbst = model.cbGet(GRB.Callback.MIP_OBJBST)
+            objbnd = model.cbGet(GRB.Callback.MIP_OBJBND)
+            if abs(objbst - objbnd) < 0.09 * (abs(objbst)):
+
+                model.terminate()
+
         if where == GRB.Callback.MIPSOL:
             # MIP solution callback
             nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
@@ -348,14 +357,7 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
 
             model.cbSetSolution(model.getVars(), sol)
 
-            # Add the cut: length >= score * diameter
-            seed_edges = {(seed[i], seed[i+1]) for i in range(len(seed) - 1)}
-
-            vals = model.cbGetSolution(list(did_use_edge[e] for e in E))
-            incumbent = dict(zip(list(E), vals))
-
-            if any(int(e in seed_edges) != int(incumbent[e] + .01) for e in E):
-                model.cbLazy(length >= score * diameter)
+            model.cbLazy(length >= score * diameter)
 
             print(
                 f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, "
@@ -363,25 +365,16 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
             )
 
 
-
-
-
-
-
-
-
-    NUM_ATTEMPTS = 3 if seed == None else 0
+    NUM_ATTEMPTS = 4 if seed == None else 0
     for attempt in range(NUM_ATTEMPTS + 1):
+        can_kill = True
 
-        median_x, median_y = sum(x for x,y in BASE_V) / len(BASE_V), sum(y for x,y in BASE_V) / len(BASE_V)
+        median_x, median_y = (sum(x for x,y in BASE_V) / len(BASE_V), sum(y for x,y in BASE_V) / len(BASE_V)) if not start else start
         max_distance = max(haversine(*v, median_x, median_y) for v in BASE_V)
 
-        mul = 1 / (1.3 ** (NUM_ATTEMPTS - attempt))
+        mul = 1 / (1.6 ** (NUM_ATTEMPTS - attempt))
         V = [v for v in BASE_V if haversine(*v, median_x, median_y) < max_distance * mul]
         E = {(u,v):w for (u,v ), w in BASE_E.items() if u in V and v in V}
-
-        local_coords = osmnx_graph.project_to_local_plane(V)
-        LOCAL_V = dict(zip(V, local_coords))
 
         n = len(V)
         model = grb.Model()
@@ -389,37 +382,43 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         # Variables for vertices used
         is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
-        model.setParam("TimeLimit", 144000)
+        model.setParam("TimeLimit", 144000 * mul ** 3)
         model.setParam("FuncNonLinear", 0)
         model.setParam("Presolve", 2)
+        model.setParam("Aggregate", 2)
+        model.setParam("Cuts", 0)
         model.setParam("NonConvex", 1)
         model.setParam("Heuristics", 0.3)
-        model.setParam("Symmetry", 2)
-        model.setParam("Cuts", 3)
-        model.setParam("MIPGap", 0.003)
-        model.setParam("FeasibilityTol", .003)
+        model.setParam("MIPGap", 0.001 if attempt == NUM_ATTEMPTS else .15)
         model.setParam("LazyConstraints", 1)
-        model.setParam("StartNodeLimit", 1000)
+        model.setParam("StartNodeLimit", 50000)
         model.setParam("FuncPieces", 150)
+        model.setParam('IntFeasTol', 1e-6)
+        model.setParam('FeasibilityTol', 1e-6)
+        model.setParam("MIPFocus",1)
+        model.setParam("OBBT", 3)
+        model.setParam("PreDual", 2)
+        model.setParam("PrePasses", 250)
+        # model.setParam("CutPasses", 3)
+        model.setParam("RINS", 100)
 
         # binary variables indicating if arc (i,j) is used on the route or not
         did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
 
         # continuous variable to prevent subtours: each city will have a
         # different sequential id in the planned route except the first one
-        index = {v: model.addVar() for v in V}
+        index = {v: model.addVar( lb = 0) for v in V}
 
         # Length of the tour
-
         MAX_LENGTH = 4e4 # 40k (roughly a marathon)
         MIN_LENGTH = 100
 
         length = model.addVar(lb = MIN_LENGTH, ub = MAX_LENGTH)
         model.update()
-        model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge))
+        model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), name = "length")
 
         log_length = model.addVar(lb=math.log(MIN_LENGTH), ub=math.log(MAX_LENGTH))
-        model.addGenConstrLog(length, log_length)
+        model.addGenConstrLog(length, log_length, name = "log_length")
 
         MAX_RADIUS = 4000
         MIN_RADIUS = 500
@@ -427,17 +426,17 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         radius = model.addVar(lb=MIN_RADIUS, ub = MAX_RADIUS)
 
         diameter = model.addVar(lb=MIN_RADIUS * 2, ub = MAX_RADIUS * 2)
-        model.addConstr(diameter == 2 * radius)
+        model.addConstr(diameter == 2 * radius + grb.quicksum(index[v] for v in V) * .0001, name="diameter")
 
         log_diameter = model.addVar(lb=math.log(MIN_RADIUS * 2), ub = math.log(MAX_RADIUS * 2))
-        model.addGenConstrLog(diameter, log_diameter)
+        model.addGenConstrLog(diameter, log_diameter, name = "log_length")
 
         # constraint : enter each city only once
         for i in V:
             in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E)
             out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E)
-            model.addConstr(out_degree == is_used[i])
-            model.addConstr(in_degree == is_used[i])
+            model.addConstr(out_degree == is_used[i], "in_degree")
+            model.addConstr(in_degree == is_used[i], "out_degree")
 
 
         # Enforce n-gon half-space constraints using Big-M
@@ -445,10 +444,12 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
 
         distances = {(u, v): haversine(*u, *v) for u in V for v in V}
         is_center = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
-        model.addConstr(grb.quicksum(used for used in is_center.values()) == 1)
+        model.addConstr(grb.quicksum(used for used in is_center.values()) == 1, name="center")
 
         for v in V:
-            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V))
+            model.addConstr(index[v] <= len(V) * is_used[v], name="index_zero_if_unused")
+
+            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V), name="radius")
 
         model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
 
@@ -456,12 +457,12 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
 
         # Only one magic source, index = 0
-        model.addConstr(grb.quicksum(is_magic.values()) <= 1)
+        model.addConstr(grb.quicksum(is_magic.values()) <= 1, name="one_start")
 
         if start:
-            magic_v = min(V if not seed else seed, key=lambda u: haversine(*start, *u))
+            magic_v = min(V, key=lambda u: haversine(*start, *u))
             model.addConstr(is_magic[magic_v] == 1)
-            model.addConstr(is_center[magic_v] == 1)
+            model.addConstr(index[magic_v] == 0)
 
             neighbors = set()
             for u, v in E:
@@ -474,25 +475,30 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
             # The outgoing edge must not come after the incoming edge.
 
             for i in range(len(neighbors) - 1):
+
+                u = neighbors[i]
+                model.addConstr(index[u] <= (sum(is_used[v] for v in V) - 1), "indices_small")
+
                 for j in range(i + 1, len(neighbors)):
-                    u = neighbors[i]
                     v = neighbors[j]
-                    model.addConstr(did_use_edge[(u, magic_v)] + did_use_edge[(v, magic_v)] <= 1)
+                    model.addConstr(did_use_edge[(u, magic_v)] + did_use_edge[(v, magic_v)] <= 1, "one_direction")
+        else:
+            magic_v = None
 
 
         # subtour elimination
         for e in E:
             i, j = e
             model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_magic[i] >= index[j] - n)
-            model.setAttr("BranchPriority", did_use_edge[e], E[e])
+            # model.setAttr("BranchPriority", did_use_edge[e], E[e])
 
         if seed:
-            # model.setParam("StartNodeLimit", 3000)
             try:
                 for v in is_magic:
-                    is_magic[v].start = int((seed[0] if not start else magic_v) == v)
+                    is_magic[v].start = int(magic_v == v)
 
                 for i in range(len(seed ) - 1):
+                    index[seed[i+1]].start = i + 1
                     did_use_edge[seed[i], seed[i+1]].start = 1
             except:
                 print("Garbage MIP start.")
@@ -500,18 +506,22 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, SIDES = 0
         # optimizing (only checking feasibility)
         try:
             model.optimize(callback)
+
+            model.setParam("MIPFocus", 3)
+            model.setParam("RINS", 0)
+            model.setParam("CutPasses", 0)
+            can_kill = False
+            model.optimize(callback)
         except KeyboardInterrupt:
             pass
 
         # checking if a feasible solution was found
         if model.status != grb.GRB.INFEASIBLE:
-            seed = examine_solution(model, is_magic, did_use_edge, V, E, OLD_V, OLD_E, name, draw and attempt == NUM_ATTEMPTS, write, seed)
+            seed = examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw and attempt == NUM_ATTEMPTS, write, seed, magic_v)
         else:
             print("No feasible solution found!")
     return seed
 
 
 for V, E, name, seed, start in CITIES:
-    find_longest_tour(V, E, name = name, write = True, draw = False, SIDES = 0, MISOCP = False, seed = seed, start = start )
-
-breakpoint()
+    find_longest_tour(V, E, name = name, write = True, draw = True, seed = seed, start = start )
