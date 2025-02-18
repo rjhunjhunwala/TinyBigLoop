@@ -43,7 +43,20 @@ def clustered(V, E, threshold=13):
 
     NEW_V = list(set(TO_LAT_LON[merged.find(coord)] for coord in local_coords))
 
-    NEW_E = {(TO_LAT_LON[merged.find(LOCAL_V[u])], TO_LAT_LON[merged.find(LOCAL_V[v])]): w for (u, v), w in E.items()}
+    denoise = {v: [] for v in NEW_V}
+    DENOISED_LAT_LON = dict()
+
+    for v in local_coords:
+        denoise[TO_LAT_LON[merged.find(v)]].append(TO_LAT_LON[v])
+
+    for rep, cluster in denoise.items():
+        num_items = len(cluster)
+        lat, lon = sum(lat for lat, lon in cluster) / num_items, sum(lon for lat, lon in cluster) /num_items
+        DENOISED_LAT_LON[rep] = lat, lon
+
+
+    NEW_V = [DENOISED_LAT_LON[v] for v in NEW_V]
+    NEW_E = {(DENOISED_LAT_LON[TO_LAT_LON[merged.find(LOCAL_V[u])]], DENOISED_LAT_LON[TO_LAT_LON[merged.find(LOCAL_V[v])]]): w for (u, v), w in E.items()}
 
     return NEW_V, NEW_E
 
@@ -400,8 +413,9 @@ class DisjointSet():
 
 
 def get_roads(place_name, threshold_distance=60, angle_threshold=10):
+    custom_filter = '["highway"]["access"!~"private"]'
     # Step 1: Load the road network
-    G = ox.graph_from_place(place_name, network_type="walk", simplify=True)
+    G = ox.graph_from_place(place_name, network_type="walk", simplify=True, custom_filter=custom_filter)
 
     self_loops = list(nx.selfloop_edges(G))
     G.remove_edges_from(self_loops)

@@ -9,8 +9,8 @@ import gpx_two
 import hoboken
 import hoboken_route
 import all_hoboken_route
-import all_jc_route
-import new_jc_route
+# import all_jc_route
+# import new_jc_route
 import jerseycity
 import jerseycity_route
 import osmnx_graph
@@ -85,11 +85,11 @@ all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
-    # [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
+    [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", None, JC_START],
     [*new_part_jc(all_jc_v, all_jc_e), "new_jc", None, JC_START],
-    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
-    # [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
-    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START],
+    [all_jc_v, all_jc_e, "all_jc", None, JC_START],
+    [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
+    [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
 
 
@@ -285,14 +285,13 @@ def selected(V, E, did_use_edge, magic_v):
     s = nc = magic_v if magic_v else max((edge for edge in did_use_edge), key = lambda e: did_use_edge[e].x)[0]
     out_list.append(nc)
     while True:
-        nc = [i for i in V if (nc, i) in E and did_use_edge[(nc, i)].x >= 0.99][0]
+        nc = [i for i in V if (nc, i) in E and (did_use_edge.get((nc, i)) or did_use_edge.get((i, nc))).x >= 0.99 if len(out_list) == 1 or out_list[-2] != i][0]
         out_list.append(nc)
         if nc == s:
             break
     return out_list
 
-def examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw, write, seed, magic_v):
-    out_list = selected(V, E, did_use_edge, magic_v)
+def examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed):
 
     old_path = out_list
     out_list = real_path(out_list, OLD_V, OLD_E)
@@ -306,7 +305,7 @@ def examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw, write, seed, 
         print(f"New tour is {new_score[0] / 1000:.2f}k and {new_score[1] / 1000:.2f}k diameter")
         print(f"Old tour is {old_score[0] / 1000:.2f}k and {old_score[1] / 1000:.2f}k diameter")
 
-        if new_score > old_score:
+        if new_score[-1] > old_score[-1]:
             with open(name + "_route.py", "w") as f:
                 f.write("ROUTE = " + repr(old_path))
             gpx_two.coords_to_gpx_route(out_list, name + "_route.gpx")
@@ -314,7 +313,61 @@ def examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw, write, seed, 
     return old_path
 
 
-def find_longest_tour(V, E, name="hoboken", draw = True, write = True, seed = None, start=None, dfj=False) -> List:
+def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=None, start = None):
+    import hexaly.optimizer
+    OLD_V, OLD_E = V, E
+    V, E = cleaned(V, E)
+    M = 1e4
+
+
+    with hexaly.optimizer.HexalyOptimizer() as optimizer:
+
+        model = optimizer.model
+
+        indices = {v: i for i, v in enumerate(V)}
+        L = len(indices)
+        indices_e = {(indices[u], indices[v]): w for (u, v), w in E.items()}
+        edge_data = [[E.get((V[i], V[j]), -M) for j in range(L)] for i in range(L)]
+        crow_flies = [[haversine(*V[i], *V[j]) for j in range(L)] for i in range(L)]
+
+        # A list variable: cities[i] is the index of the ith city in the tour
+        visits = model.list(L)
+
+
+        # Create a Hexaly array for the distance matrix in order to be able
+        # to access it with "at" operators
+        dist_matrix = model.array(edge_data)
+        crow_matrix = model.array(crow_flies)
+
+        dist_lambda = model.lambda_function(lambda i:
+                                            model.at(dist_matrix, visits[i - 1], visits[i]))
+        total = model.sum(model.range(1, model.count(visits)), dist_lambda) \
+              + model.at(dist_matrix, visits[model.count(visits) - 1], visits[0])
+
+        crow_flies = model.lambda_function(lambda i:
+                                            model.at(crow_matrix, visits[i], visits[0]))
+        diameter = model.max(model.range(1, model.count(visits)), crow_flies)
+
+        model.maximize(total / (diameter * 2))
+
+        model.close()
+        optimizer.param.time_limit = 10000
+        try:
+            optimizer.solve()
+        except:
+            pass
+
+        visits = list(visits.value)
+        visits.append(visits[0])
+
+        out_list = [V[idx] for idx in visits]
+
+        breakpoint()
+        examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed)
+
+
+
+def find_longest_tour(V, E, name="hoboken", draw=True, write=True, seed=None, start = None) -> List:
     OLD_V, OLD_E = V, E
     BASE_V, BASE_E = cleaned(OLD_V, OLD_E)
 
@@ -322,206 +375,164 @@ def find_longest_tour(V, E, name="hoboken", draw = True, write = True, seed = No
         draw_graph(list(E), V, color="blue")
 
 
-    if seed and any(v not in BASE_V for v in seed):
-        seed = None
-
+    # DFJ-style lazy separation callback for subtours.
     def callback(model, where):
-        """
-        Every time we get a feasible solution, consider examining it.
-        Then use a simple BFS to augment the solution.
-        :param model:
-        :param where:
-        :return:
-        """
-        if where == GRB.Callback.MIP and can_kill:
-            objbst = model.cbGet(GRB.Callback.MIP_OBJBST)
-            objbnd = model.cbGet(GRB.Callback.MIP_OBJBND)
-            if abs(objbst - objbnd) < 0.09 * (abs(objbst)):
-
-                model.terminate()
-
+        # When a new MIP solution is found, perform DFJ lazy separation
         if where == GRB.Callback.MIPSOL:
-            # MIP solution callback
-            nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
-            obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
-            solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
+            # Get current solution for the vertex selection and arc variables.
+            is_used_sol = {v: model.cbGetSolution(is_used[v]) for v in V}
+            edge_sol = {e: model.cbGetSolution(did_use_edge[e]) for e in did_use_edge}
+            # Identify "visited" vertices (threshold 0.5)
+            visited = [v for v in V if is_used_sol[v] > 0.5]
+            # Build the (undirected) support graph over visited vertices:
+            graph = {v: [] for v in visited}
+            for (i, j) in did_use_edge:
+                if i in visited and j in visited and edge_sol[(i, j)] > 0.5:
+                    graph[i].append(j)
+                    graph[j].append(i)
 
-            # Get the current solution values for length and diameter
-            length_val = model.cbGetSolution(length)
-            diameter_val = model.cbGetSolution(diameter)
+            # A simple DFS to find connected components:
+            def dfs(v, comp, visited_set):
+                visited_set.add(v)
+                comp.append(v)
+                for u in graph[v]:
+                    if u not in visited_set:
+                        dfs(u, comp, visited_set)
+            visited_set = set()
+            components = []
+            for v in visited:
+                if v not in visited_set:
+                    comp = []
+                    dfs(v, comp, visited_set)
+                    components.append(set(comp))
 
-            # Calculate the score for the current tour
-            score = (length_val) / diameter_val
-
-            sol = model.cbGetSolution(model.getVars())
-
-            model.cbSetSolution(model.getVars(), sol)
-
-            model.cbLazy(length >= score * diameter)
-
-            print(
-                f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, "
-                f"sol {solcnt:.0f},, score = {score} ****"
-            )
+            # If there is more than one connected component among visited vertices,
+            # then for each proper component, add the lazy DFJ constraint.
+            if len(components) > 1:
+                for comp in components:
+                    if magic_v not in comp:
+                        comp_vars = [is_used[v] for v in comp]
+                        cut = [var for (u,v), var in did_use_edge.items() if u in comp and v not in comp or v in comp and u not in comp]
+                        model.cbLazy(2 * (len(comp_vars) - grb.quicksum(comp_vars)) + grb.quicksum(cut) >= 2)
 
 
-    NUM_ATTEMPTS = 4 if seed == None else 0
+            else:
+                # (Optionally, you can still compute your score and print info)
+                nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
+                obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+                solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
+                length_val = model.cbGetSolution(length)
+                diameter_val = model.cbGetSolution(diameter)
+                score = length_val / diameter_val
+                model.cbLazy(length >= score * diameter)
+                print(f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, sol {solcnt:.0f}, score = {score} ****")
+
+    # Remove (or comment out) your previous subtour elimination constraint:
+    # for e in E:
+    #     i, j = e
+    #     model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_magic[i] >= index[j] - n)
+
+    NUM_ATTEMPTS = 4 if seed is None else 0
     for attempt in range(NUM_ATTEMPTS + 1):
-        can_kill = True
 
-        median_x, median_y = (sum(x for x,y in BASE_V) / len(BASE_V), sum(y for x,y in BASE_V) / len(BASE_V)) if not start else start
+        if start:
+            magic_v = min(V, key = lambda v: haversine(*start, *v))
+            median_x, median_y = magic_v
+        else:
+
+            median_x, median_y = ((sum(x for x, y in BASE_V) / len(BASE_V),
+                                sum(y for x, y in BASE_V) / len(BASE_V)))
+            magic_v = min(V, key = lambda v: haversine( median_x, median_y, * v))
+
         max_distance = max(haversine(*v, median_x, median_y) for v in BASE_V)
 
         mul = 1 / (1.6 ** (NUM_ATTEMPTS - attempt))
         V = [v for v in BASE_V if haversine(*v, median_x, median_y) < max_distance * mul]
-        E = {(u,v):w for (u,v ), w in BASE_E.items() if u in V and v in V}
+        E = {(u, v): w for (u, v), w in BASE_E.items() if u in V and v in V}
 
-        n = len(V)
         model = grb.Model()
 
-        # Variables for vertices used
-        is_used = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+        # Vertex selection variable: y (here named is_used)
+        is_used = {v: model.addVar(vtype=grb.GRB.BINARY, name=f"y_{v}") for v in V}
 
+        # Set model parameters (unchanged)
         model.setParam("TimeLimit", 144000 * mul ** 3)
-        model.setParam("FuncNonLinear", 0)
-        model.setParam("Presolve", 2)
-        model.setParam("Aggregate", 2)
-        model.setParam("Cuts", 0)
-        model.setParam("NonConvex", 1)
-        model.setParam("Heuristics", 0.3)
-        model.setParam("MIPGap", 0.001 if attempt == NUM_ATTEMPTS else .15)
+        model.setParam("Cuts", 3)
+        model.setParam("MIPFocus", 1)
+        model.setParam("FuncNonlinear", 0)
+        model.setParam("MIPGap", 0.0005 if attempt == NUM_ATTEMPTS else 0.15)
         model.setParam("LazyConstraints", 1)
-        model.setParam("StartNodeLimit", 50000)
         model.setParam("FuncPieces", 150)
-        model.setParam('IntFeasTol', 1e-6)
-        model.setParam('FeasibilityTol', 1e-6)
-        model.setParam("MIPFocus",1)
-        model.setParam("OBBT", 3)
-        model.setParam("PreDual", 2)
-        model.setParam("PrePasses", 250)
-        # model.setParam("CutPasses", 3)
-        model.setParam("RINS", 100)
+        model.setParam("StartNodeLimit", 100000)
 
-        # binary variables indicating if arc (i,j) is used on the route or not
-        did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY) for e in E}
+        # Binary variables for each arc (edge) used on the route
+        did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E if e[0] < e[1]}
 
-        # continuous variable to prevent subtours: each city will have a
-        # different sequential id in the planned route except the first one
-        index = {v: model.addVar( lb = 0) for v in V}
-
-        # Length of the tour
-        MAX_LENGTH = 4e4 # 40k (roughly a marathon)
+        # Tour length variable
+        MAX_LENGTH = 4e4  # 40k (roughly a marathon)
         MIN_LENGTH = 100
-
-        length = model.addVar(lb = MIN_LENGTH, ub = MAX_LENGTH)
+        length = model.addVar(lb=MIN_LENGTH, ub=MAX_LENGTH, name="length")
         model.update()
-        model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), name = "length")
+        model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), name="length_constr")
 
-        log_length = model.addVar(lb=math.log(MIN_LENGTH), ub=math.log(MAX_LENGTH))
-        model.addGenConstrLog(length, log_length, name = "log_length")
+        log_length = model.addVar(lb=math.log(MIN_LENGTH), ub=math.log(MAX_LENGTH), name="log_length")
+        model.addGenConstrLog(length, log_length, name="log_length_constr")
 
         MAX_RADIUS = 4000
         MIN_RADIUS = 500
+        radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
 
-        radius = model.addVar(lb=MIN_RADIUS, ub = MAX_RADIUS)
+        diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
+        model.addConstr(diameter == 2 * radius, name="diameter_constr")
 
-        diameter = model.addVar(lb=MIN_RADIUS * 2, ub = MAX_RADIUS * 2)
-        model.addConstr(diameter == 2 * radius + grb.quicksum(index[v] for v in V) * .0001, name="diameter")
+        log_diameter = model.addVar(lb=math.log(MIN_RADIUS * 2), ub=math.log(MAX_RADIUS * 2), name="log_diameter")
+        model.addGenConstrLog(diameter, log_diameter, name="log_diameter_constr")
 
-        log_diameter = model.addVar(lb=math.log(MIN_RADIUS * 2), ub = math.log(MAX_RADIUS * 2))
-        model.addGenConstrLog(diameter, log_diameter, name = "log_length")
-
-        # constraint : enter each city only once
-        for i in V:
-            in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in E)
-            out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in E)
-            model.addConstr(out_degree == is_used[i], "in_degree")
-            model.addConstr(in_degree == is_used[i], "out_degree")
-
-
-        # Enforce n-gon half-space constraints using Big-M
-        M = 4e3  # A sufficiently large constant Compute this reasonably.
-
+        # (Other constraints, e.g. a “center” selection, remain unchanged.)
+        M = 4e3  # Big-M constant
         distances = {(u, v): haversine(*u, *v) for u in V for v in V}
-        is_center = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
-        model.addConstr(grb.quicksum(used for used in is_center.values()) == 1, name="center")
+        is_center = {v: model.addVar(vtype=grb.GRB.BINARY, name=f"center_{v}") for v in V}
+        model.addConstr(grb.quicksum(is_center[v] for v in V) == 1, name="one_center")
 
         for v in V:
-            model.addConstr(index[v] <= len(V) * is_used[v], name="index_zero_if_unused")
+            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V), name=f"radius_{v}")
 
-            model.addConstr(radius + M * (1 - is_used[v]) >= grb.quicksum(distances[(u, v)] * is_center[u] for u in V), name="radius")
-
+        # Set the objective (as in your code)
         model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
 
-        # binary variables indicating if arc (i,j) is used on the route or not
-        is_magic = {v: model.addVar(vtype=grb.GRB.BINARY) for v in V}
+        # Degree constraints: For every vertex, incoming == outgoing == is_used[v]
+        for i in V:
+            in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in did_use_edge)
+            out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in did_use_edge)
+            model.addConstr(out_degree + in_degree == 2 * is_used[i], name=f"deg_{i}")
 
-        # Only one magic source, index = 0
-        model.addConstr(grb.quicksum(is_magic.values()) <= 1, name="one_start")
+        # (The previous loop adding index-based subtour constraints has been removed.)
 
-        if start:
-            magic_v = min(V, key=lambda u: haversine(*start, *u))
-            model.addConstr(is_magic[magic_v] == 1)
-            model.addConstr(index[magic_v] == 0)
-
-            neighbors = set()
-            for u, v in E:
-                if u == magic_v:
-                    neighbors.add(v)
-                elif v == magic_v:
-                    neighbors.add(u)
-            neighbors = sorted(list(neighbors))
-            # break the symmetry,
-            # The outgoing edge must not come after the incoming edge.
-
-            for i in range(len(neighbors) - 1):
-
-                u = neighbors[i]
-                model.addConstr(index[u] <= (sum(is_used[v] for v in V) - 1), "indices_small")
-
-                for j in range(i + 1, len(neighbors)):
-                    v = neighbors[j]
-                    model.addConstr(did_use_edge[(u, magic_v)] + did_use_edge[(v, magic_v)] <= 1, "one_direction")
-        else:
-            magic_v = None
-
-
-        # subtour elimination
-        for e in E:
-            i, j = e
-            model.addConstr(index[i] - (n + 1) * did_use_edge[e] + 2 * n * is_magic[i] >= index[j] - n)
-            # model.setAttr("BranchPriority", did_use_edge[e], E[e])
-
+        # (If you have a MIP start, you can assign starting values to is_used, index, and did_use_edge.)
         if seed:
             try:
-                for v in is_magic:
-                    is_magic[v].start = int(magic_v == v)
+                for i in range(len(seed) - 1):
+                    for edge in [(seed[i], seed[i + 1]), (seed[i + 1], seed[i])]:
+                        if edge in did_use_edge:
+                            did_use_edge[edge].start = 1
+            except Exception as e:
+                print("Garbage MIP start.", e)
 
-                for i in range(len(seed ) - 1):
-                    index[seed[i+1]].start = i + 1
-                    did_use_edge[seed[i], seed[i+1]].start = 1
-            except:
-                print("Garbage MIP start.")
-
-        # optimizing (only checking feasibility)
+        # Optimize with the lazy callback for DFJ subtour elimination
         try:
-            model.optimize(callback)
-
-            model.setParam("MIPFocus", 3)
-            model.setParam("RINS", 0)
-            model.setParam("CutPasses", 0)
-            can_kill = False
             model.optimize(callback)
         except KeyboardInterrupt:
             pass
 
-        # checking if a feasible solution was found
         if model.status != grb.GRB.INFEASIBLE:
-            seed = examine_solution(did_use_edge, V, E, OLD_V, OLD_E, name, draw and attempt == NUM_ATTEMPTS, write, seed, magic_v)
+            import random
+            out_list = selected(V, E, did_use_edge, magic_v)
+            seed = examine_solution(out_list, V, E, OLD_V, OLD_E, name,
+                                      draw and attempt == NUM_ATTEMPTS, write, seed)
         else:
             print("No feasible solution found!")
     return seed
 
 
-for V, E, name, seed, start in CITIES:
-    find_longest_tour(V, E, name = name, write = True, draw = True, seed = seed, start = start )
+for V, E, name, seed, start in reversed(CITIES):
+    find_longest_tour(V, E, name = name, write = True, draw = False, seed = seed, start = start )
