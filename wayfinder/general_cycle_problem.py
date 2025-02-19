@@ -80,15 +80,15 @@ def get_grid(SIZE):
                 E[((new_i, new_j), (i, j))] = 1
     return V, E
 
-all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
+# all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 
-all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
+# all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
     [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
-    [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
-    [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
-    [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
+    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
+    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
+    # [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
     [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
 
@@ -446,14 +446,13 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
 
     # Set model parameters (unchanged)
     model.setParam("TimeLimit", 144000)
-    model.setParam("Cuts", 3)
     model.setParam("MIPFocus", 3)
+    model.setParam("Cuts", 0)
     model.setParam("FuncNonlinear", 0)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
     model.setParam("FuncPieces", 150)
     model.setParam("StartNodeLimit", 100000)
-    model.setParam("Aggregate", 2)
 
     # Binary variables for each arc (edge) used on the route
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E if e[0] < e[1]}
@@ -513,10 +512,14 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     # (If you have a MIP start, you can assign starting values to is_used, index, and did_use_edge.)
     if seed:
         try:
+            used_edges = set()
             for i in range(len(seed) - 1):
                 for edge in [(seed[i], seed[i + 1]), (seed[i + 1], seed[i])]:
-                    if edge in did_use_edge:
-                        did_use_edge[edge].start = 1
+                    used_edges.add(edge)
+
+            for edge in did_use_edge:
+                did_use_edge[edge].start = int(edge in used_edges)
+
         except Exception as e:
             print("Garbage MIP start.", e)
 
