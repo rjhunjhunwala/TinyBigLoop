@@ -52,11 +52,11 @@ def is_point_in_polygon(polygon, point):
 def new_part_jc(V, E):
     """Return the 'new' part of JC"""
     polygon = [
-        (-74.10434, 40.7605261),
-        (- 74.0976437, 40.7016614),
-        (- 74.077216, 40.6915763),
-        (- 74.0412515, 40.7229158),
-        (- 74.10434, 40.7605261),
+        (-74.112, 40.768),  # Expanded NW
+        (-74.105, 40.693),  # Expanded SW
+        (-74.083, 40.685),  # Expanded SE
+        (-74.034, 40.730),  # Expanded NE
+        (-74.112, 40.768),  # Close the loop
     ]
 
     polygon = [(v, u) for u,v in polygon]
@@ -82,14 +82,14 @@ def get_grid(SIZE):
 
 # all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
 
-# all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
+all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
 
 CITIES = [
-    [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
-    # [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
+    # [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
+    [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
     # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
     # [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
-    [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
+    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
 
 
@@ -158,7 +158,7 @@ def real_path(tour, ORIG_V, ORIG_E):
         while fringe:
             new_fringe = []
             for u in fringe:
-                for v in in_deg[u]:
+                for v in in_deg.get(u, []):
                     if v not in visited:  # Only degree-2 vertices
                         if v == next:
 
@@ -191,7 +191,7 @@ def real_path(tour, ORIG_V, ORIG_E):
     return output
 
 def draw_graph(E, V, screen=None, color="red"):
-    
+
     min_x = min(V, key=lambda v: v[0])[0]
     min_y = min(V, key=lambda v: v[1])[1]
     max_x = max(V, key=lambda v: v[0])[0]
@@ -367,7 +367,7 @@ def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=N
 
 
 
-def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=None, start = None) -> List:
+def find_longest_tour_flow(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=None, start = None, log_trick = True, misocp = True) -> List:
     V, E = cleaned(OLD_V, OLD_E)
 
     local_coords = list(osmnx_graph.project_to_local_plane(lat_lon_list=V))
@@ -377,9 +377,195 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     if draw:
         draw_graph(list(E), V, color="blue")
 
+    count = 0
 
     # DFJ-style lazy separation callback for subtours.
     def callback(model, where):
+        nonlocal count
+        # When a new MIP solution is found, perform DFJ lazy separation
+        if where == GRB.Callback.MIPSOL:
+            # (Optionally, you can still compute your score and print info)
+            nodecnt = model.cbGet(GRB.Callback.MIPSOL_NODCNT)
+            obj = model.cbGet(GRB.Callback.MIPSOL_OBJ)
+            solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
+            length_val = model.cbGetSolution(length)
+            diameter_val = model.cbGetSolution(diameter)
+            score = (length_val / diameter_val)
+
+            count += 1
+            if count > 3:
+                model.cbLazy(length >= score * diameter)
+
+            print(f"**** New solution at node {nodecnt:.0f}, obj {obj:g} ({diameter_val=}, {length_val=}), sol {solcnt:.0f}, score = {score} ****")
+
+    if start:
+        magic_v = min(V, key = lambda v: haversine(*start, *v))
+        median_x, median_y = magic_v
+    else:
+
+        median_x, median_y = ((sum(x for x, y in V) / len(V),
+                            sum(y for x, y in V) / len(V)))
+        magic_v = min(V, key = lambda v: haversine( median_x, median_y, * v))
+
+    model = grb.Model()
+
+    # Vertex selection variable: y (here named is_used)
+    is_used = {v: model.addVar(vtype=grb.GRB.BINARY, name=f"y_{v}") for v in V}
+
+    flow = {e: model.addVar(vtype=GRB.CONTINUOUS, lb=0, name=f"f_{e}") for e in E}
+
+
+    # Set model parameters (unchanged)
+    model.setParam("TimeLimit", 144000)
+    model.setParam("MIPFocus", 3)
+    model.setParam("Cuts", 3)
+    model.setParam("BQPCuts", 2)
+    model.setParam("FuncNonlinear",0)
+    model.setParam("FuncPieces", 150)
+    model.setParam("Presolve", 2)
+    model.setParam("MIPGap", 0.0005)
+    model.setParam("LazyConstraints", 1)
+    model.setParam("Heuristics", 0.05)
+
+
+    # Binary variables for each arc (edge) used on the route
+    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E}
+
+    # Degree constraints: For every vertex, incoming == outgoing == is_used[v]
+    for i in V:
+        in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in did_use_edge)
+        out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in did_use_edge)
+        model.addConstr(out_degree == is_used[i], name=f"deg_{i}_out")
+        model.addConstr(in_degree == is_used[i], name=f"deg_{i}_in")
+
+    # Flow conservation constraints: Flow entering a node = Flow leaving it
+    for i in V:
+        if i == magic_v:
+            continue
+        model.addConstr(
+            grb.quicksum(flow[(j, i)] for j in V if (j, i) in flow) -
+            grb.quicksum(flow[(i, j)] for j in V if (i, j) in flow) == is_used[i],
+            name=f"flow_balance_{i}"
+        )
+
+    # Flow bounds: If an edge is used, it can carry flow
+    for e in flow:
+        model.addConstr(flow[e] <= len(V) * did_use_edge[e], name=f"flow_cap_{e}")
+
+
+    # Tour length variable
+    MAX_LENGTH = 6e4  # 40k (roughly a marathon)
+    MIN_LENGTH = 100
+    length = model.addVar(lb=MIN_LENGTH, ub=MAX_LENGTH, name="length")
+    if log_trick:
+        log_length = model.addVar()
+        model.addGenConstrLog(length, log_length)
+    model.update()
+    model.addConstr(length == grb.quicksum((E[e] + + .0001 * (e[0] < e[1])) * did_use_edge[e] for e in did_use_edge),
+                    name="length_constr")
+
+    min_x = min(x for x, y in local_coords)
+    min_y = min(y for x, y in local_coords)
+    max_x = max(x for x, y in local_coords)
+    max_y = max(y for x, y in local_coords)
+
+    MAX_RADIUS = ((max_x - min_x) ** 2 + (max_y - min_y) ** 2) ** .5 / 2
+    MIN_RADIUS = 250
+    radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
+
+    diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
+    if log_trick:
+        log_diameter = model.addVar()
+        model.addGenConstrLog(diameter, log_diameter)
+    model.addConstr(diameter == 2 * radius, name="diameter_constr")
+
+    center_x = model.addVar(lb=min_x, ub=max_x, name="center_x")
+    center_y = model.addVar(lb=min_y, ub=max_y, name="center_y")
+
+
+
+
+    for v in V:
+        x, y = LOCAL_V[v]
+        if misocp:
+            model.addConstr(
+                (x - center_x) ** 2 +  (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
+            )
+        else:
+            NUM_SIDES = 12
+            for side in range(NUM_SIDES):
+                x_length = math.cos(side * 2 *  math.pi / NUM_SIDES)
+                y_length = math.sin(side * 2 *  math.pi / NUM_SIDES)
+
+                model.addGenConstrIndicator(
+                    is_used[v],  # Binary variable
+                    True,  # Condition: is_used[v] == 1
+                    x_length * (x - center_x) + y_length * (y - center_y) <= radius,
+                    name=f"indicator_constraint_{v}"
+                )
+
+    if log_trick:
+        model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
+    else:
+        score = model.addVar()
+        model.addConstr(score == (length.nl / diameter))
+        model.setObjective(score, grb.GRB.MAXIMIZE)
+
+    model.addConstr(is_used[magic_v] == 1)
+
+    # (If you have a MIP start, you can assign starting values to is_used, index, and did_use_edge.)
+    if seed:
+        try:
+            used_edges = set()
+            used_vertices = set()
+            for i in range(len(seed) - 1):
+                edge = (seed[i], seed[i + 1])
+                used_edges.add(edge)
+                flow[edge].start = len(seed) - i
+                for u, v in edge:
+                    used_vertices.add(u)
+                    used_vertices.add(v)
+
+            for edge in did_use_edge:
+                did_use_edge[edge].start = int(edge in used_edges)
+
+            for v in is_used:
+                is_used[v].start = int(v in used_vertices)
+
+        except Exception as e:
+            print("Garbage MIP start.", e)
+
+    # Optimize with the lazy callback for DFJ subtour elimination
+    try:
+        model.optimize(callback)
+    except KeyboardInterrupt:
+        pass
+
+    if model.status != grb.GRB.INFEASIBLE:
+        import random
+        out_list = selected(V, E, did_use_edge, magic_v)
+        return examine_solution(out_list, V, E, OLD_V, OLD_E, name,
+                                  draw and attempt == NUM_ATTEMPTS, write, seed)
+    else:
+        print("No feasible solution found!")
+
+
+
+def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=None, start = None, log_trick = True, misocp = True) -> List:
+    V, E = cleaned(OLD_V, OLD_E)
+
+    local_coords = list(osmnx_graph.project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+    TO_LAT_LON = dict(zip(local_coords, V))
+
+    if draw:
+        draw_graph(list(E), V, color="blue")
+
+    count = 0
+
+    # DFJ-style lazy separation callback for subtours.
+    def callback(model, where):
+        nonlocal count
         # When a new MIP solution is found, perform DFJ lazy separation
         if where == GRB.Callback.MIPSOL:
             # Get current solution for the vertex selection and arc variables.
@@ -426,9 +612,11 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                 solcnt = model.cbGet(GRB.Callback.MIPSOL_SOLCNT)
                 length_val = model.cbGetSolution(length)
                 diameter_val = model.cbGetSolution(diameter)
-                score = length_val / diameter_val
-                model.cbLazy(length >= score * diameter)
-                print(f"**** New solution at node {nodecnt:.0f}, obj {obj:g}, sol {solcnt:.0f}, score = {score} ****")
+                score = (length_val / diameter_val)
+                count += 1
+                if count > 3:
+                    model.cbLazy(length >= score * diameter)
+                print(f"**** New solution at node {nodecnt:.0f}, obj {obj:g} ({diameter_val=}, {length_val=}), sol {solcnt:.0f}, score = {score} ****")
 
     if start:
         magic_v = min(V, key = lambda v: haversine(*start, *v))
@@ -447,75 +635,101 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     # Set model parameters (unchanged)
     model.setParam("TimeLimit", 144000)
     model.setParam("MIPFocus", 3)
-    model.setParam("Cuts", 0)
-    model.setParam("FuncNonlinear", 0)
+    model.setParam("Cuts", 3)
+    model.setParam("BQPCuts", 2)
+    model.setParam("PreSolve", 2)
+    model.setParam("FuncNonlinear", 1)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
-    model.setParam("FuncPieces", 150)
-    model.setParam("StartNodeLimit", 100000)
+    model.setParam("Heuristics", 0.05)
+
 
     # Binary variables for each arc (edge) used on the route
-    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E if e[0] < e[1]}
+    did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E}
 
     # Tour length variable
     MAX_LENGTH = 5e4  # 40k (roughly a marathon)
     MIN_LENGTH = 100
     length = model.addVar(lb=MIN_LENGTH, ub=MAX_LENGTH, name="length")
+    if log_trick:
+        log_length = model.addVar()
+        model.addGenConstrLog(length, log_length)
     model.update()
     model.addConstr(length == grb.quicksum(E[e] * did_use_edge[e] for e in did_use_edge), name="length_constr")
-
-    log_length = model.addVar(lb=math.log(MIN_LENGTH), ub=math.log(MAX_LENGTH), name="log_length")
-    model.addGenConstrLog(length, log_length, name="log_length_constr")
-
-    MAX_RADIUS = 4000
-    MIN_RADIUS = 500
-    radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
-
-    diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
-    model.addConstr(diameter == 2 * radius, name="diameter_constr")
-
-    log_diameter = model.addVar(lb=math.log(MIN_RADIUS * 2), ub=math.log(MAX_RADIUS * 2), name="log_diameter")
-    model.addGenConstrLog(diameter, log_diameter, name="log_diameter_constr")
-
-    # (Other constraints, e.g. a “center” selection, remain unchanged.)
-    M = 4e3  # Big-M constant
 
     min_x = min(x for x, y in local_coords)
     min_y = min(y for x, y in local_coords)
     max_x = max(x for x, y in local_coords)
     max_y = max(y for x, y in local_coords)
 
+    MAX_RADIUS = ((max_x - min_x) ** 2 + (max_y - min_y) ** 2) ** .5 / 2
+    MIN_RADIUS = 250
+    radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
+
+    diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
+    if log_trick:
+        log_diameter = model.addVar()
+        model.addGenConstrLog(diameter, log_diameter)
+    model.addConstr(diameter == 2 * radius, name="diameter_constr")
+
     center_x = model.addVar(lb=min_x, ub=max_x, name="center_x")
     center_y = model.addVar(lb=min_y, ub=max_y, name="center_y")
 
-    NUM_SIDES = 20
-    for side in range(NUM_SIDES):
-        x_length = math.cos(side * 2 *  math.pi / NUM_SIDES)
-        y_length = math.sin(side * 2 *  math.pi / NUM_SIDES)
 
-        for v in V:
-            x, y = LOCAL_V[v]
-            model.addConstr(  x_length * (x - center_x) +  y_length * (y - center_y) <= radius + (1 - is_used[v]) * MAX_RADIUS)
+    for u, v in E:
+        for w in V:
+            if ((u, w) in E or (w, u) in E) and ((v, w) in V or (w, v) in V):
+                a = did_use_edge[(u, v)]
+                b = did_use_edge.get((w, v)) or did_use_edge[(v, w)]
+                c = did_use_edge.get((u,w)) or did_use_edge[(w, u)]
+                model.addConstr(a + b + c <= 2)
 
-    # Set the objective (as in your code)
-    model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
+
+
+
+
+    for v in V:
+        x, y = LOCAL_V[v]
+        if misocp:
+            model.addConstr(
+                (x - center_x) ** 2 +  (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
+            )
+        else:
+            NUM_SIDES = 12
+            for side in range(NUM_SIDES):
+                x_length = math.cos(side * 2 *  math.pi / NUM_SIDES)
+                y_length = math.sin(side * 2 *  math.pi / NUM_SIDES)
+
+                model.addGenConstrIndicator(
+                    is_used[v],  # Binary variable
+                    True,  # Condition: is_used[v] == 1
+                    x_length * (x - center_x) + y_length * (y - center_y) <= radius,
+                    name=f"indicator_constraint_{v}"
+                )
+
+    if log_trick:
+        model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
+    else:
+        score = model.addVar()
+        model.addConstr(score == (length.nl / diameter))
+        model.setObjective(score, grb.GRB.MAXIMIZE)
 
     # Degree constraints: For every vertex, incoming == outgoing == is_used[v]
     for i in V:
         in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in did_use_edge)
         out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in did_use_edge)
-        model.addConstr(out_degree + in_degree == 2 * is_used[i], name=f"deg_{i}")
-    model.addConstr(is_used[magic_v] == 1)
+        model.addConstr(out_degree == is_used[i], name=f"deg_{i}_out")
+        model.addConstr(in_degree == is_used[i], name=f"deg_{i}_in")
 
-    # (The previous loop adding index-based subtour constraints has been removed.)
+    model.addConstr(is_used[magic_v] == 1)
 
     # (If you have a MIP start, you can assign starting values to is_used, index, and did_use_edge.)
     if seed:
         try:
             used_edges = set()
-            for i in range(len(seed) - 1):
-                for edge in [(seed[i], seed[i + 1]), (seed[i + 1], seed[i])]:
-                    used_edges.add(edge)
+            for i in range(len(seed)):
+                edge = (seed[i], seed[(i + 1) % len(seed)])
+                used_edges.add(edge)
 
             for edge in did_use_edge:
                 did_use_edge[edge].start = int(edge in used_edges)
@@ -539,4 +753,4 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
 
 
 for V, E, name, seed, start in reversed(CITIES):
-    find_longest_tour(V, E, name = name, write = True, draw = False, seed = seed, start = start )
+    find_longest_tour(V, E, name = name, write = True, draw = False, seed = seed, start = start , log_trick=True, misocp=False)

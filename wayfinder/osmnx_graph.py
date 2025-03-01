@@ -14,7 +14,7 @@ import sys
 sys.setrecursionlimit(10000)
 
 
-def clustered(V, E, threshold=13):
+def clustered(V, E, threshold=15):
     """
     Clusters the vertices of a graph based on spatial proximity and builds a cluster graph.
 
@@ -114,12 +114,12 @@ def force_planar(V, E):
     return V, E_new
 
 
-def remove_shallow_angles(V, E, angle_threshold=25):
+def remove_shallow_angles(V, E, angle_threshold=38):
     """
     Remove one of two edges connected to the same vertex if the angle between them is less than a given threshold.
 
     Parameters:
-        V (list of tuples): List of (lat, lon) verticR43es.
+        V (list of tuples): List of (lat, lon) vertices.
         E (dict): Dictionary mapping edges (vertex pairs) to distances.
         angle_threshold (float): The angle threshold in degrees for removing edges.
 
@@ -182,7 +182,7 @@ def remove_shallow_angles(V, E, angle_threshold=25):
             for j in range(i + 1, len(edges)):
                 v2, dist2 = edges[j]
                 u2 = vertex
-                local_u2 = LOCAL_V[u]
+                local_u2 = LOCAL_V[u1]
                 local_v2 = LOCAL_V[v2]
                 edge_line_2 = LineString([local_u2, local_v2])
 
@@ -193,7 +193,7 @@ def remove_shallow_angles(V, E, angle_threshold=25):
                 # Calculate the angle between the two edges
                 angle_between = calculate_angle(edge_line_1, edge_line_2)
 
-                if 0.001 < angle_between < angle_threshold and dist1 > 80 and dist2 > 80:
+                if 0 < angle_between < angle_threshold:
                     # Remove the shorter edge
                     if dist1 <= dist2:
                         E_new.pop((u1, v1), None)
@@ -205,7 +205,7 @@ def remove_shallow_angles(V, E, angle_threshold=25):
     return V, E_new
 
 
-def handle_t(V, E, threshold=16):
+def handle_t(V, E, threshold=15):
     # Create copies of V and E to avoid modifying the originals
     V = V.copy()
     E = E.copy()
@@ -413,7 +413,7 @@ class DisjointSet():
 
 
 def get_roads(place_name, threshold_distance=60, angle_threshold=10):
-    custom_filter = '["highway"]["access"!~"private"]'
+    custom_filter = '["highway"]["access"!~"no|private|discouraged"]["service"!~"parking_aisle|driveway|maintenance|emergency-access"]'
     # Step 1: Load the road network
     G = ox.graph_from_place(place_name, network_type="walk", simplify=True, custom_filter=custom_filter)
 
