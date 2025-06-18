@@ -5,18 +5,59 @@ from typing import List, Optional
 import math
 import numpy as np
 
-import gpx_two
-import hoboken
-import hoboken_route
-import all_hoboken_route
-import all_jc_route
-import new_jc_route
-import jerseycity
-import jerseycity_route
-import osmnx_graph
+import gpx_two, osmnx_graph
+
+import hoboken_road_path_route, jc_path_route
+
+def haversine(lat1, lon1, lat2, lon2):
+    """
+    Calculate the great-circle distance between two points
+    on the Earth (specified in decimal degrees).
+
+    Parameters:
+        lat1, lon1: Latitude and longitude of point 1 in decimal degrees.
+        lat2, lon2: Latitude and longitude of point 2 in decimal degrees.
+
+    Returns:
+        Distance in kilometers.
+    """
+    # Convert decimal degrees to radians
+    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
+
+    # Haversine formula
+    dlat = lat2 - lat1
+    dlon = lon2 - lon1
+    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
+    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+    r = 6371  # Radius of Earth in kilometers
+    return r * c * 1000
+
+
+def join_graph(V1, E1, V2, E2):
+
+
+    V_out = list(set(V1 + V2))
+
+    cross = dict()
+
+    counts = {v: 0 for v in V2}
+
+    for v in V2:
+        u = min(V1, key = lambda u: haversine(*u, *v))
+        dist = haversine(*u, *v)
+
+        if dist < 14.1:
+            cross[(u, v)] = dist
+            cross[(v, u)] = dist
+
+    E_out = {e: w for e, w in (list(E1.items()) + list(cross.items()) + list(E2.items()))}
+
+    return osmnx_graph.force_planar(V_out, E_out)
+
 
 HOBOKEN_START = (40.742712, -74.033422)
 JC_START = (40.718516, -74.075073)
+
 
 def is_point_in_polygon(polygon, point):
     """
@@ -49,6 +90,7 @@ def is_point_in_polygon(polygon, point):
 
     return True  # Point is inside the polygon if no sign mismatch
 
+
 def new_part_jc(V, E):
     """Return the 'new' part of JC"""
     polygon = [
@@ -59,12 +101,11 @@ def new_part_jc(V, E):
         (-74.112, 40.768),  # Close the loop
     ]
 
-    polygon = [(v, u) for u,v in polygon]
+    polygon = [(v, u) for u, v in polygon]
 
     interior_v = set([v for v in V if is_point_in_polygon(polygon, v)])
 
     return list(interior_v), {e: w for e, w in E.items() if all(v in interior_v for v in e)}
-
 
 
 def get_grid(SIZE):
@@ -80,19 +121,53 @@ def get_grid(SIZE):
                 E[((new_i, new_j), (i, j))] = 1
     return V, E
 
-all_hoboken_v, all_hoboken_e = osmnx_graph.get_roads(osmnx_graph.HOBOKEN_NAME)
+import xml.etree.ElementTree as ET
 
-all_jc_v, all_jc_e = osmnx_graph.get_roads(osmnx_graph.JC_NAME)
+import xml.etree.ElementTree as ET
+
+def parse_xml(filename):
+    tree = ET.parse(filename)
+    root = tree.getroot()
+
+    node_map = {}  # id -> (lat, lon)
+
+    for node in root.findall('node'):
+        if any(tag.attrib.get('v') == 'crossing' for tag in node.findall('tag')):
+            continue
+        node_map[node.attrib['id']] = (float(node.attrib['lat']), float(node.attrib['lon']))
+
+    V = set(node_map.values())
+    E = {}
+
+    for way in root.findall('way'):
+        refs = [nd.attrib['ref'] for nd in way.findall('nd') if nd.attrib['ref'] in node_map]
+        for a, b in zip(refs, refs[1:]):
+            u = node_map[a]
+            v = node_map[b]
+            dist = haversine(u[0], u[1], v[0], v[1])
+            E[(u, v)] = dist
+            E[(v, u)] = dist
+
+    return list(V), E
+
+
+HOBOKEN_V, HOBOKEN_E = parse_xml("hoboken.xml")
+HOBOKEN_PATH_V, HOBOKEN_PATH_E = parse_xml("hoboken_paths.xml")
+
+HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E = join_graph(HOBOKEN_V, HOBOKEN_E, HOBOKEN_PATH_V, HOBOKEN_PATH_E)
+
+JC_V, JC_E = parse_xml("jerseycity.xml")
+JC_PATH_V, JC_PATH_E = parse_xml("jerseycity_paths.xml")
+
+JC_ROAD_PATH_V, JC_ROAD_PATH_E = join_graph(JC_V, JC_E, JC_PATH_V, JC_PATH_E)
+
 
 CITIES = [
-    # [*new_part_jc(*osmnx_graph.remove_bridges_and_orphans(jerseycity.V, jerseycity.E)), "jerseycity", jerseycity_route.ROUTE, JC_START],
-    [*new_part_jc(all_jc_v, all_jc_e), "new_jc", new_jc_route.ROUTE, JC_START],
-    # [all_jc_v, all_jc_e, "all_jc", all_jc_route.ROUTE, JC_START],
-    # [all_hoboken_v, all_hoboken_e, "all_hoboken",  all_hoboken_route.ROUTE, HOBOKEN_START],
-    # [*osmnx_graph.remove_bridges_and_orphans(hoboken.V, hoboken.E), "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
+    # [*new_part_jc(JC_V, JC_E), "jerseycity", jerseycity_route.ROUTE, JC_START],
+    [*new_part_jc(JC_ROAD_PATH_V, JC_ROAD_PATH_E), "jc_path", None, JC_START],
+    # [HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E, "hoboken_road_path", None, HOBOKEN_START]
+    # [HOBOKEN_V, HOBOKEN_E, "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
-
-
 
 
 def get_indegrees(E):
@@ -103,6 +178,7 @@ def get_indegrees(E):
             in_deg[v] = []
         in_deg[v].append(u)
     return in_deg
+
 
 def cleaned(H_V, H_E):
     import copy
@@ -137,7 +213,7 @@ def cleaned(H_V, H_E):
                 for dir in ((a, b), (b, a)):
                     OUT_E[dir] = max(OUT_E.get(dir, 0), a_dist + b_dist)
 
-    return list(in_deg), OUT_E
+    return osmnx_graph.prune_antiparallel_edges(*osmnx_graph.force_planar(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)))
 
 
 def real_path(tour, ORIG_V, ORIG_E):
@@ -169,7 +245,8 @@ def real_path(tour, ORIG_V, ORIG_E):
                             if len(in_deg[v]) == 2:
                                 visited.add(v)
                                 new_fringe.append(v)
-                                back_refs[v] = (u, back_refs[u][1] + ORIG_E.get((u, v), 0))  # Store the parent and edge weight
+                                back_refs[v] = (
+                                u, back_refs[u][1] + ORIG_E.get((u, v), 0))  # Store the parent and edge weight
 
             fringe = new_fringe
 
@@ -190,8 +267,8 @@ def real_path(tour, ORIG_V, ORIG_E):
 
     return output
 
-def draw_graph(E, V, screen=None, color="red"):
 
+def draw_graph(E, V, screen=None, color="red"):
     min_x = min(V, key=lambda v: v[0])[0]
     min_y = min(V, key=lambda v: v[1])[1]
     max_x = max(V, key=lambda v: v[0])[0]
@@ -240,30 +317,6 @@ def draw_graph(E, V, screen=None, color="red"):
     # Keep the window open until clicked
     return screen
 
-
-def haversine(lat1, lon1, lat2, lon2):
-    """
-    Calculate the great-circle distance between two points
-    on the Earth (specified in decimal degrees).
-
-    Parameters:
-        lat1, lon1: Latitude and longitude of point 1 in decimal degrees.
-        lat2, lon2: Latitude and longitude of point 2 in decimal degrees.
-
-    Returns:
-        Distance in kilometers.
-    """
-    # Convert decimal degrees to radians
-    lat1, lon1, lat2, lon2 = map(math.radians, [lat1, lon1, lat2, lon2])
-
-    # Haversine formula
-    dlat = lat2 - lat1
-    dlon = lon2 - lon1
-    a = math.sin(dlat / 2) ** 2 + math.cos(lat1) * math.cos(lat2) * math.sin(dlon / 2) ** 2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    r = 6371  # Radius of Earth in kilometers
-    return r * c * 1000
-
 def score(route):
     if not route:
         return .00001, 100000, 0
@@ -272,27 +325,30 @@ def score(route):
 
     for u in route:
         for v in route:
-            distance = max(distance, haversine(*u,*v))
-    lent = sum(haversine(*route[i], *route[i+1]) for i in range(len(route) - 1))
+            distance = max(distance, haversine(*u, *v))
+    lent = sum(haversine(*route[i], *route[i + 1]) for i in range(len(route) - 1))
     return lent, distance, lent / distance
 
 
 def edges(out_list):
     return [[out_list[i], out_list[i + 1]] for i in range(len(out_list) - 1)]
 
+
 def selected(V, E, did_use_edge, magic_v):
     out_list = []
-    s = nc = magic_v if magic_v else max((edge for edge in did_use_edge), key = lambda e: did_use_edge[e].x)[0]
+    s = nc = magic_v if magic_v else max((edge for edge in did_use_edge), key=lambda e: did_use_edge[e].x)[0]
     out_list.append(nc)
     while True:
-        nc = [i for i in V if (nc, i) in E and (did_use_edge.get((nc, i)) or did_use_edge.get((i, nc))).x >= 0.99 if len(out_list) == 1 or out_list[-2] != i][0]
+        nc = [i for i in V if ((nc, i) in did_use_edge or (i, nc) in did_use_edge) and (
+                    did_use_edge.get((nc, i)) or did_use_edge.get((i, nc))).x >= 0.99 if
+              len(out_list) == 1 or out_list[-2] != i][0]
         out_list.append(nc)
         if nc == s:
             break
     return out_list
 
-def examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed):
 
+def examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed):
     old_path = out_list
     out_list = real_path(out_list, OLD_V, OLD_E)
     if draw:
@@ -313,12 +369,11 @@ def examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed):
     return old_path
 
 
-def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=None, start = None):
+def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=None, start=None):
     import hexaly.optimizer
     OLD_V, OLD_E = V, E
     V, E = cleaned(V, E)
     M = 1e4
-
 
     with hexaly.optimizer.HexalyOptimizer() as optimizer:
 
@@ -333,7 +388,6 @@ def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=N
         # A list variable: cities[i] is the index of the ith city in the tour
         visits = model.list(L)
 
-
         # Create a Hexaly array for the distance matrix in order to be able
         # to access it with "at" operators
         dist_matrix = model.array(edge_data)
@@ -342,10 +396,10 @@ def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=N
         dist_lambda = model.lambda_function(lambda i:
                                             model.at(dist_matrix, visits[i - 1], visits[i]))
         total = model.sum(model.range(1, model.count(visits)), dist_lambda) \
-              + model.at(dist_matrix, visits[model.count(visits) - 1], visits[0])
+                + model.at(dist_matrix, visits[model.count(visits) - 1], visits[0])
 
         crow_flies = model.lambda_function(lambda i:
-                                            model.at(crow_matrix, visits[i], visits[0]))
+                                           model.at(crow_matrix, visits[i], visits[0]))
         diameter = model.max(model.range(1, model.count(visits)), crow_flies)
 
         model.maximize(total / (diameter * 2))
@@ -366,8 +420,8 @@ def find_longest_tour_hexaly(V, E, name="hoboken", draw=True, write=True, seed=N
         examine_solution(out_list, V, E, OLD_V, OLD_E, name, draw, write, seed)
 
 
-
-def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=None, start = None, log_trick = True, misocp = True) -> List:
+def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=None, start=None, log_trick=True,
+                      misocp=True, quadratic_radius=False, nonlinear=True) -> List:
     V, E = cleaned(OLD_V, OLD_E)
 
     local_coords = list(osmnx_graph.project_to_local_plane(lat_lon_list=V))
@@ -403,6 +457,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                 for u in graph[v]:
                     if u not in visited_set:
                         dfs(u, comp, visited_set)
+
             visited_set = set()
             components = []
             for v in visited:
@@ -417,7 +472,8 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                 for comp in components:
                     if magic_v not in comp:
                         comp_vars = [is_used[v] for v in comp]
-                        cut = [var for (u,v), var in did_use_edge.items() if u in comp and v not in comp or v in comp and u not in comp]
+                        cut = [var for (u, v), var in did_use_edge.items() if
+                               u in comp and v not in comp or v in comp and u not in comp]
                         model.cbLazy(2 * (len(comp_vars) - grb.quicksum(comp_vars)) + grb.quicksum(cut) >= 2)
 
 
@@ -432,16 +488,17 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                 count += 1
                 if count > 3:
                     model.cbLazy(length >= score * diameter)
-                print(f"**** New solution at node {nodecnt:.0f}, obj {obj:g} ({diameter_val=}, {length_val=}), sol {solcnt:.0f}, score = {score} ****")
+                print(
+                    f"**** New solution at node {nodecnt:.0f}, obj {obj:g} ({diameter_val=}, {length_val=}), sol {solcnt:.0f}, score = {score} ****")
 
     if start:
-        magic_v = min(V, key = lambda v: haversine(*start, *v))
+        magic_v = min(V, key=lambda v: haversine(*start, *v))
         median_x, median_y = magic_v
     else:
 
         median_x, median_y = ((sum(x for x, y in V) / len(V),
-                            sum(y for x, y in V) / len(V)))
-        magic_v = min(V, key = lambda v: haversine( median_x, median_y, * v))
+                               sum(y for x, y in V) / len(V)))
+        magic_v = min(V, key=lambda v: haversine(median_x, median_y, *v))
 
     model = grb.Model()
 
@@ -449,21 +506,20 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     is_used = {v: model.addVar(vtype=grb.GRB.BINARY, name=f"y_{v}") for v in V}
 
     # Set model parameters (unchanged)
-    model.setParam("TimeLimit", 144000)
     model.setParam("MIPFocus", 3)
-    model.setParam("Presolve", 2)
-    model.setParam("Cuts",0 if not misocp else 0) #)  # Default is -1 (automatic); 2 forces moderate cuts
-    model.setParam("FuncNonlinear", 1)
+    model.setParam("FuncNonlinear", int(nonlinear))
+    model.setParam("Cuts", 0)
+    model.setParam("FuncPieces", 30)
+    model.setParam("TimeLimit", 14400)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
-    model.setParam("Heuristics", 0.15)
-
+    model.setParam("Heuristics", 0.25)
 
     # Binary variables for each arc (edge) used on the route
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E if e[0] < e[1]}
 
     # Tour length variable
-    MAX_LENGTH = 6e4  # 40k (roughly a marathon)
+    MAX_LENGTH = 6e4
     MIN_LENGTH = 100
     length = model.addVar(lb=MIN_LENGTH, ub=MAX_LENGTH, name="length")
     if log_trick:
@@ -476,9 +532,8 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     min_y = min(y for x, y in local_coords)
     max_x = max(x for x, y in local_coords)
     max_y = max(y for x, y in local_coords)
-
     MAX_RADIUS = ((max_x - min_x) ** 2 + (max_y - min_y) ** 2) ** .5 / 2
-    MIN_RADIUS = 1000
+    MIN_RADIUS = 500
     radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
 
     diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
@@ -490,25 +545,34 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     center_x = model.addVar(lb=min_x, ub=max_x, name="center_x")
     center_y = model.addVar(lb=min_y, ub=max_y, name="center_y")
 
+    if quadratic_radius:
+        # Ensure diameter is the max pairwise distance between selected vertices
+        for u in V:
+            for v in V:
+                if u < v:
+                    dist_uv = haversine(*u, *v)
 
-    for v in V:
-        x, y = LOCAL_V[v]
-        if misocp:
-            model.addConstr(
-                (x - center_x) ** 2 +  (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
-            )
-        else:
-            NUM_SIDES = 8
-            for side in range(NUM_SIDES):
-                x_length = math.cos(side * 2 *  math.pi / NUM_SIDES)
-                y_length = math.sin(side * 2 *  math.pi / NUM_SIDES)
-
-                model.addGenConstrIndicator(
-                    is_used[v],  # Binary variable
-                    True,  # Condition: is_used[v] == 1
-                    x_length * (x - center_x) + y_length * (y - center_y) <= radius,
-                    name=f"indicator_constraint_{v}"
+                    # Constraint: diameter must be at least the distance between any two selected vertices
+                    model.addConstr(diameter >= dist_uv * (is_used[u] + is_used[v] - 1))
+    else:
+        for v in V:
+            x, y = LOCAL_V[v]
+            if misocp:
+                model.addConstr(
+                    (x - center_x) ** 2 + (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
                 )
+            else:
+                NUM_SIDES = 8
+                for side in range(NUM_SIDES):
+                    x_length = math.cos(side * 2 * math.pi / NUM_SIDES)
+                    y_length = math.sin(side * 2 * math.pi / NUM_SIDES)
+
+                    model.addGenConstrIndicator(
+                        is_used[v],  # Binary variable
+                        True,  # Condition: is_used[v] == 1
+                        x_length * (x - center_x) + y_length * (y - center_y) <= radius,
+                        name=f"indicator_constraint_{v}"
+                    )
 
     if log_trick:
         model.setObjective(log_length - log_diameter, grb.GRB.MAXIMIZE)
@@ -521,6 +585,12 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     for i in V:
         in_degree = grb.quicksum(did_use_edge[(j, i)] for j in V if (j, i) in did_use_edge)
         out_degree = grb.quicksum(did_use_edge[(i, j)] for j in V if (i, j) in did_use_edge)
+        for j in V:
+            if (i, j) in did_use_edge:
+                model.addConstr(is_used[i] >= did_use_edge[(i, j)], name=f"is_used_mir_{i}_{j}")
+            elif (j, i) in did_use_edge:
+                model.addConstr(is_used[i] >= did_use_edge[(j, i)], name=f"is_used_mir_{i}_{j}")
+
         model.addConstr(out_degree + in_degree == 2 * is_used[i], name=f"deg_{i}")
     model.addConstr(is_used[magic_v] == 1)
 
@@ -545,13 +615,12 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
         pass
 
     if model.status != grb.GRB.INFEASIBLE:
-        import random
         out_list = selected(V, E, did_use_edge, magic_v)
         return examine_solution(out_list, V, E, OLD_V, OLD_E, name,
-                                  draw and attempt == NUM_ATTEMPTS, write, seed)
+                                draw, write, seed)
     else:
         print("No feasible solution found!")
 
-
 for V, E, name, seed, start in reversed(CITIES):
-    find_longest_tour(V, E, name = name, write = True, draw = False, seed = seed, start = start , log_trick=False, misocp=True)
+    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=True, misocp=False,
+                      quadratic_radius=False, nonlinear=False)

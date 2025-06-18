@@ -14,7 +14,7 @@ import sys
 sys.setrecursionlimit(10000)
 
 
-def clustered(V, E, threshold=15):
+def clustered(V, E, threshold=3):
     """
     Clusters the vertices of a graph based on spatial proximity and builds a cluster graph.
 
@@ -114,7 +114,7 @@ def force_planar(V, E):
     return V, E_new
 
 
-def remove_shallow_angles(V, E, angle_threshold=38):
+def remove_shallow_angles(V, E, angle_threshold=9):
     """
     Remove one of two edges connected to the same vertex if the angle between them is less than a given threshold.
 
@@ -205,7 +205,78 @@ def remove_shallow_angles(V, E, angle_threshold=38):
     return V, E_new
 
 
-def handle_t(V, E, threshold=15):
+
+def angle_between(v1, v2):
+    # Returns angle in degrees between vectors v1 and v2
+    dot = v1[0]*v2[0] + v1[1]*v2[1]
+    det = v1[0]*v2[1] - v1[1]*v2[0]
+    angle = math.atan2(det, dot)
+    return math.degrees(abs(angle))  # Always positive angle
+
+def vector_from(u, v):
+    return (v[0] - u[0], v[1] - u[1])
+
+def prune_antiparallel_edges(V, E, distance_threshold=25, angle_threshold=2):
+    # Copy and project
+    V = V.copy()
+    E = E.copy()
+
+    local_coords = list(project_to_local_plane(lat_lon_list=V))
+    LOCAL_V = dict(zip(V, local_coords))
+
+    # R-tree of edges
+    edge_index = index.Index()
+    edge_map = {}
+    for edge_id, ((u, v), length) in enumerate(E.items()):
+        if u < v:  # Avoid double-insertion
+            local_u, local_v = LOCAL_V[u], LOCAL_V[v]
+            line = LineString([local_u, local_v])
+            edge_index.insert(edge_id, line.bounds)
+            edge_map[edge_id] = (u, v, line, length)
+
+    edges_to_remove = set()
+
+    for edge_id, (u1, v1, line1, len1) in edge_map.items():
+        local_u1, local_v1 = LOCAL_V[u1], LOCAL_V[v1]
+        vec1 = vector_from(local_u1, local_v1)
+
+        # Nearby edge candidates
+        buffer = distance_threshold
+        minx, miny, maxx, maxy = line1.bounds
+        nearby_ids = list(edge_index.intersection((minx - buffer, miny - buffer, maxx + buffer, maxy + buffer)))
+        for nid in nearby_ids:
+            if nid == edge_id or nid not in edge_map:
+                continue
+
+            u2, v2, line2, len2 = edge_map[nid]
+            if u1 in {v1, v2} or u2 in {v1, v2}:
+                continue
+
+            if not (5 < line1.distance(line2) < distance_threshold):
+                continue
+
+            local_u2, local_v2 = LOCAL_V[u2], LOCAL_V[v2]
+            vec2 = vector_from(local_u2, local_v2)
+
+            angle = angle_between(vec1, vec2)
+            if angle > 180 - angle_threshold or angle < angle_threshold:
+                # Remove the shorter edge
+                key1 = (u1, v1)
+                key2 = (u2, v2)
+                if len1 < len2:
+                    edges_to_remove.add(key1)
+                    edges_to_remove.add((v1, u1))  # bidirectional
+                else:
+                    edges_to_remove.add(key2)
+                    edges_to_remove.add((v2, u2))  # bidirectional
+
+    for key in edges_to_remove:
+        if key in E:
+            del E[key]
+
+    return V, E
+
+def handle_t(V, E, threshold=3):
     # Create copies of V and E to avoid modifying the originals
     V = V.copy()
     E = E.copy()
@@ -295,6 +366,82 @@ from shapely.ops import transform
 import numpy as np
 from pyproj import CRS, Transformer
 
+import math
+
+def bearing(p1, p2):
+    lat1, lon1 = map(math.radians, p1)
+    lat2, lon2 = map(math.radians, p2)
+    dlon = lon2 - lon1
+    x = math.sin(dlon) * math.cos(lat2)
+    y = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dlon)
+    return math.atan2(x, y)
+
+def angle_diff(b1, b2):
+    return abs((b1 - b2 + math.pi) % (2 * math.pi) - math.pi)
+
+
+def simplify_antiparallel_bumps(V, E, short_thresh=45, long_thresh=20, angle_thresh=.2):
+    neighbors = defaultdict(set)
+    OUT_V = V.copy()
+    OUT_E = E.copy()
+
+    for (u, v) in E:
+        neighbors[u].add(v)
+        neighbors[v].add(u)
+
+    to_delete = set()
+
+    for b in V:
+        b_neighbors = list(neighbors[b])
+        if len(b_neighbors) < 2:
+            continue
+
+        # Check all neighbor pairs (a, c) around b
+        for i in range(len(b_neighbors)):
+            for j in range(i + 1, len(b_neighbors)):
+                a = b_neighbors[i]
+                c = b_neighbors[j]
+
+                # Ensure edges exist in E (both directions)
+
+                assert all((edge in E) for edge in [(a,b), (b,a), (b,c ), (c, b)])
+
+                dab = E[(a, b)]
+                dbc = E[(b, c)]
+
+                # Only proceed if BC is short and AB is long
+                if dab < long_thresh or dbc > short_thresh:
+                    continue
+
+                # Now look at C's neighbors other than B
+                for d in neighbors[c]:
+                    if d == b:
+                        continue
+                    assert (c, d) in E and (d, c) in E
+
+                    dcd = E[(c, d)]
+
+                    if dcd < long_thresh:
+                        continue
+
+                    # Compare bearings: AB vs CD
+                    bearing_ab = bearing(a, b)
+                    bearing_cd = bearing(c, d)
+                    diff = angle_diff(bearing_ab, (bearing_cd + 180) % 360)
+
+                    if diff < angle_thresh:
+                        # Delete shorter of AB and CD
+                        if dab < dcd:
+                            to_delete.add((a, b))
+                            to_delete.add((b, a))
+                        else:
+                            to_delete.add((c, d))
+                            to_delete.add((d, c))
+
+    for edge in to_delete:
+        del OUT_E[edge]
+
+    return OUT_V, OUT_E
 
 def project_to_local_plane(lat_lon_list):
     """
@@ -306,9 +453,10 @@ def project_to_local_plane(lat_lon_list):
     import numpy as np
 
     # Step 1: Calculate the median latitude and longitude
-    latitudes = [lat for lat, lon in lat_lon_list]
-    longitudes = [lon for lat, lon in lat_lon_list]
-
+    latitudes = [lat for lat, lon in lat_lon_list if not np.isnan(lat)]
+    longitudes = [lon for lat, lon in lat_lon_list if not np.isnan(lon)]
+    if not latitudes:
+        breakpoint()
     median_lat = np.median(latitudes)
     median_lon = np.median(longitudes)
 
@@ -413,12 +561,22 @@ class DisjointSet():
 
 
 def get_roads(place_name, threshold_distance=60, angle_threshold=10):
-    custom_filter = '["highway"]["access"!~"no|private|discouraged"]["service"!~"parking_aisle|driveway|maintenance|emergency-access"]'
-    # Step 1: Load the road network
-    G = ox.graph_from_place(place_name, network_type="walk", simplify=True, custom_filter=custom_filter)
+    import osmnx as ox
 
-    self_loops = list(nx.selfloop_edges(G))
-    G.remove_edges_from(self_loops)
+    custom_filter = (
+        '["highway"~"living_street|pedestrian|path|trail|footway"]'
+        '["footway"!~"sidewalk"]'
+        '["access"!~"private|no|discouraged"]'
+        '["service"!~"parking_aisle|driveway|maintenance|emergency_access"]'
+    )
+
+    G = ox.graph_from_place(
+        place_name,
+        custom_filter=custom_filter,
+        simplify=True,
+        retain_all=False,
+        network_type="all"
+    )
 
     # Step 3: Create nodes (V) and edges (E)
     # Convert V into (lat, lon) pairs
@@ -441,20 +599,21 @@ def get_roads(place_name, threshold_distance=60, angle_threshold=10):
     
     output = (V, E)
     
+    return cleanup(output)
+
+def cleanup(output):
     transforms = [
         clustered,
         handle_t,
-        force_planar,
         remove_shallow_angles,
+        force_planar,
         remove_bridges_and_orphans
     ]
-    
+
     for transform in transforms:
         output = transform(*output)
-    
-    
-    return output
 
+    return output
 
 def remove_bridges_and_orphans(V, E):
     import collections
@@ -518,3 +677,46 @@ def remove_bridges_and_orphans(V, E):
     final_E = {(u, v): dist for (u, v), dist in new_E.items() if u in final_V and v in final_V}
 
     return final_V, final_E
+
+
+from collections import defaultdict
+
+def join_ambiguous_intersections(V, E):
+    degree = defaultdict(int)
+    for u, v in E:
+        degree[u] += 1
+        degree[v] += 1
+
+    ds = DisjointSet(V)
+
+    for (u, v), w in E.items():
+        if degree[u] > 2 and degree[v] > 2:
+            if w < 30:
+                ds.union(u, v)
+
+    # Group vertices by representative
+    groups = defaultdict(list)
+    for v in V:
+        groups[ds.find(v)].append(v)
+
+    # Compute centroid for each group
+    rep_to_centroid = {}
+    for rep, group in groups.items():
+        lat = sum(v[0] for v in group) / len(group)
+        lon = sum(v[1] for v in group) / len(group)
+        rep_to_centroid[rep] = (lat, lon)
+
+    # Rewrite vertices and edges with centroids
+    new_vertices = list(rep_to_centroid.values())
+    new_edges = {}
+
+    for (u, v), w in E.items():
+        ru = ds.find(u)
+        rv = ds.find(v)
+        cu = rep_to_centroid[ru]
+        cv = rep_to_centroid[rv]
+        if cu != cv:
+            new_edges[(cu, cv)] = w
+            new_edges[(cv, cu)] = w  # if undirected
+
+    return new_vertices, new_edges
