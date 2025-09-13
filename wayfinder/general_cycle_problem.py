@@ -626,5 +626,5 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
         print("No feasible solution found!")
 
 for V, E, name, seed, start in reversed(CITIES):
-    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=False, misocp=True,
-                      quadratic_radius=False, nonlinear=True)
+    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=True, misocp=False,
+                      quadratic_radius=False, nonlinear=False)
