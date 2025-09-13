@@ -7,7 +7,8 @@ import numpy as np
 
 import gpx_two, osmnx_graph
 
-import hoboken_road_path_route, jc_path_route, jerseycity_route
+import hoboken_road_path_route, jc_path_route, jerseycity_route, hoboken_route
+
 
 def haversine(lat1, lon1, lat2, lon2):
     """
@@ -43,22 +44,23 @@ def join_graph(V1, E1, V2, E2):
     counts = {v: 0 for v in V2}
     for u, v in E2:
         counts[v] += 1
+
     V2_LEAVES = [v for v in counts if counts[v] == 1]
 
     for v in V2_LEAVES:
         u = min(V1, key = lambda u: haversine(*u, *v))
         dist = haversine(*u, *v)
 
-        if dist < 8.2:
+        if dist < 7.1:
             cross[(u, v)] = dist
             cross[(v, u)] = dist
 
     E_out = {e: w for e, w in (list(E1.items()) + list(cross.items()) + list(E2.items()))}
 
-    return osmnx_graph.force_planar(V_out, E_out)
+    return V_out, E_out
 
 
-HOBOKEN_START = (40.742712, -74.033422)
+HOBOKEN_START = (40.742812, -74.033522)
 JC_START = (40.718516, -74.075073)
 
 
@@ -167,8 +169,8 @@ JC_ROAD_PATH_V, JC_ROAD_PATH_E = join_graph(JC_V, JC_E, JC_PATH_V, JC_PATH_E)
 
 CITIES = [
     # [*new_part_jc(JC_V, JC_E), "jerseycity_basic    ", jerseycity_route.ROUTE, JC_START],
-    [*new_part_jc(JC_ROAD_PATH_V, JC_ROAD_PATH_E), "jc_path", jc_path_route.ROUTE, JC_START],
-    # [HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E, "hoboken_road_path", None, HOBOKEN_START]
+   #  [*new_part_jc(JC_ROAD_PATH_V, JC_ROAD_PATH_E), "jc_path", jc_path_route.ROUTE, JC_START],
+    [HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E, "hoboken_road_path", hoboken_road_path_route.ROUTE, HOBOKEN_START]
     # [HOBOKEN_V, HOBOKEN_E, "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
 
@@ -215,8 +217,7 @@ def cleaned(H_V, H_E):
 
                 for dir in ((a, b), (b, a)):
                     OUT_E[dir] = max(OUT_E.get(dir, 0), a_dist + b_dist)
-
-    return osmnx_graph.prune_antiparallel_edges(*osmnx_graph.force_planar(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)))
+    return osmnx_graph.prune_antiparallel_edges(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E))
 
 
 def real_path(tour, ORIG_V, ORIG_E):
@@ -512,7 +513,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     model.setParam("MIPFocus", 1)
     model.setParam("FuncNonlinear", int(nonlinear))
     model.setParam("Cuts", 0)
-    model.setParam("FuncPieces", 8)
+    model.setParam("FuncPieces", 48)
     model.setParam("TimeLimit", 144000)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
@@ -565,7 +566,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                     (x - center_x) ** 2 + (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
                 )
             else:
-                NUM_SIDES = 5
+                NUM_SIDES = 6
                 for side in range(NUM_SIDES):
                     x_length = math.cos(side * 2 * math.pi / NUM_SIDES)
                     y_length = math.sin(side * 2 * math.pi / NUM_SIDES)
@@ -625,5 +626,5 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
         print("No feasible solution found!")
 
 for V, E, name, seed, start in reversed(CITIES):
-    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=True, misocp=False,
-                      quadratic_radius=False, nonlinear=False)
+    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=False, misocp=True,
+                      quadratic_radius=False, nonlinear=True)
