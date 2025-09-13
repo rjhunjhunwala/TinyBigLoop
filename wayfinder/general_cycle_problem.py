@@ -217,7 +217,7 @@ def cleaned(H_V, H_E):
 
                 for dir in ((a, b), (b, a)):
                     OUT_E[dir] = max(OUT_E.get(dir, 0), a_dist + b_dist)
-    return osmnx_graph.prune_antiparallel_edges(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E))
+    return osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)
 
 
 def real_path(tour, ORIG_V, ORIG_E):
