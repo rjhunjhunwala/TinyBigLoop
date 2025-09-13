@@ -145,6 +145,13 @@ def parse_xml(filename):
     E = {}
 
     for way in root.findall('way'):
+
+        area_tag = way.find('./tag[@k="area"]')
+        if area_tag is not None:
+            area_value = area_tag.attrib["v"]  # "yes", "no", etc.
+            if area_value == "yes":
+                continue
+
         refs = [nd.attrib['ref'] for nd in way.findall('nd') if nd.attrib['ref'] in node_map]
         for a, b in zip(refs, refs[1:]):
             u = node_map[a]
@@ -155,9 +162,9 @@ def parse_xml(filename):
 
     return list(V), E
 
-
-HOBOKEN_V, HOBOKEN_E = parse_xml("hoboken.xml")
 HOBOKEN_PATH_V, HOBOKEN_PATH_E = parse_xml("hoboken_paths.xml")
+HOBOKEN_V, HOBOKEN_E = parse_xml("hoboken.xml")
+
 
 HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E = join_graph(HOBOKEN_V, HOBOKEN_E, HOBOKEN_PATH_V, HOBOKEN_PATH_E)
 
@@ -217,7 +224,7 @@ def cleaned(H_V, H_E):
 
                 for dir in ((a, b), (b, a)):
                     OUT_E[dir] = max(OUT_E.get(dir, 0), a_dist + b_dist)
-    return osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)
+    return osmnx_graph.force_planar(*osmnx_graph.prune_antiparallel_edges(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)))
 
 
 def real_path(tour, ORIG_V, ORIG_E):
@@ -513,7 +520,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     model.setParam("MIPFocus", 1)
     model.setParam("FuncNonlinear", int(nonlinear))
     model.setParam("Cuts", 0)
-    model.setParam("FuncPieces", 48)
+    model.setParam("FuncPieces", 9)
     model.setParam("TimeLimit", 144000)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
@@ -566,7 +573,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                     (x - center_x) ** 2 + (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
                 )
             else:
-                NUM_SIDES = 6
+                NUM_SIDES = 5
                 for side in range(NUM_SIDES):
                     x_length = math.cos(side * 2 * math.pi / NUM_SIDES)
                     y_length = math.sin(side * 2 * math.pi / NUM_SIDES)
