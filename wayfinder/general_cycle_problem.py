@@ -51,7 +51,7 @@ def join_graph(V1, E1, V2, E2):
         u = min(V1, key = lambda u: haversine(*u, *v))
         dist = haversine(*u, *v)
 
-        if dist < 7.1:
+        if dist < 14.1:
             cross[(u, v)] = dist
             cross[(v, u)] = dist
 
@@ -160,7 +160,7 @@ def parse_xml(filename):
             E[(u, v)] = dist
             E[(v, u)] = dist
 
-    return list(V), E
+    return osmnx_graph.force_planar(list(V), E)
 
 HOBOKEN_PATH_V, HOBOKEN_PATH_E = parse_xml("hoboken_paths.xml")
 HOBOKEN_V, HOBOKEN_E = parse_xml("hoboken.xml")
@@ -224,7 +224,7 @@ def cleaned(H_V, H_E):
 
                 for dir in ((a, b), (b, a)):
                     OUT_E[dir] = max(OUT_E.get(dir, 0), a_dist + b_dist)
-    return osmnx_graph.force_planar(*osmnx_graph.prune_antiparallel_edges(*osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)))
+    return osmnx_graph.remove_bridges_and_orphans(list(in_deg), OUT_E)
 
 
 def real_path(tour, ORIG_V, ORIG_E):
@@ -633,5 +633,5 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
         print("No feasible solution found!")
 
 for V, E, name, seed, start in reversed(CITIES):
-    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=True, misocp=False,
-                      quadratic_radius=False, nonlinear=False)
+    find_longest_tour(V, E, name=name, write=True, draw=False, seed=seed, start=start, log_trick=False, misocp=True,
+                      quadratic_radius=False, nonlinear=True)
