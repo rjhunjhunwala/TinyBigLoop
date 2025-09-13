@@ -7,7 +7,7 @@ import numpy as np
 
 import gpx_two, osmnx_graph
 
-import hoboken_road_path_route, jc_path_route
+import hoboken_road_path_route, jc_path_route, jerseycity_route
 
 def haversine(lat1, lon1, lat2, lon2):
     """
@@ -41,12 +41,15 @@ def join_graph(V1, E1, V2, E2):
     cross = dict()
 
     counts = {v: 0 for v in V2}
+    for u, v in E2:
+        counts[v] += 1
+    V2_LEAVES = [v for v in counts if counts[v] == 1]
 
-    for v in V2:
+    for v in V2_LEAVES:
         u = min(V1, key = lambda u: haversine(*u, *v))
         dist = haversine(*u, *v)
 
-        if dist < 14.1:
+        if dist < 8.2:
             cross[(u, v)] = dist
             cross[(v, u)] = dist
 
@@ -163,8 +166,8 @@ JC_ROAD_PATH_V, JC_ROAD_PATH_E = join_graph(JC_V, JC_E, JC_PATH_V, JC_PATH_E)
 
 
 CITIES = [
-    # [*new_part_jc(JC_V, JC_E), "jerseycity", jerseycity_route.ROUTE, JC_START],
-    [*new_part_jc(JC_ROAD_PATH_V, JC_ROAD_PATH_E), "jc_path", None, JC_START],
+    # [*new_part_jc(JC_V, JC_E), "jerseycity_basic    ", jerseycity_route.ROUTE, JC_START],
+    [*new_part_jc(JC_ROAD_PATH_V, JC_ROAD_PATH_E), "jc_path", jc_path_route.ROUTE, JC_START],
     # [HOBOKEN_ROAD_PATH_V, HOBOKEN_ROAD_PATH_E, "hoboken_road_path", None, HOBOKEN_START]
     # [HOBOKEN_V, HOBOKEN_E, "hoboken", hoboken_route.ROUTE, HOBOKEN_START]
 ]
@@ -506,14 +509,14 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     is_used = {v: model.addVar(vtype=grb.GRB.BINARY, name=f"y_{v}") for v in V}
 
     # Set model parameters (unchanged)
-    model.setParam("MIPFocus", 3)
+    model.setParam("MIPFocus", 1)
     model.setParam("FuncNonlinear", int(nonlinear))
     model.setParam("Cuts", 0)
-    model.setParam("FuncPieces", 30)
-    model.setParam("TimeLimit", 14400)
+    model.setParam("FuncPieces", 8)
+    model.setParam("TimeLimit", 144000)
     model.setParam("MIPGap", 0.0005)
     model.setParam("LazyConstraints", 1)
-    model.setParam("Heuristics", 0.25)
+    model.setParam("Heuristics", 0.1)
 
     # Binary variables for each arc (edge) used on the route
     did_use_edge = {e: model.addVar(vtype=grb.GRB.BINARY, name=f"x_{e}") for e in E if e[0] < e[1]}
@@ -533,7 +536,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
     max_x = max(x for x, y in local_coords)
     max_y = max(y for x, y in local_coords)
     MAX_RADIUS = ((max_x - min_x) ** 2 + (max_y - min_y) ** 2) ** .5 / 2
-    MIN_RADIUS = 500
+    MIN_RADIUS = 100
     radius = model.addVar(lb=MIN_RADIUS, ub=MAX_RADIUS, name="radius")
 
     diameter = model.addVar(lb=MIN_RADIUS * 2, ub=MAX_RADIUS * 2, name="diameter")
@@ -562,7 +565,7 @@ def find_longest_tour(OLD_V, OLD_E, name="hoboken", draw=True, write=True, seed=
                     (x - center_x) ** 2 + (y - center_y) ** 2 <= (radius + (1 - is_used[v]) * MAX_RADIUS) ** 2,
                 )
             else:
-                NUM_SIDES = 8
+                NUM_SIDES = 5
                 for side in range(NUM_SIDES):
                     x_length = math.cos(side * 2 * math.pi / NUM_SIDES)
                     y_length = math.sin(side * 2 * math.pi / NUM_SIDES)
